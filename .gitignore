@@ -1,0 +1,10 @@
+dist/
+build/
+*.zip
+__pycache__/
+*.spec
+Save_data/
+gpt_review_bundle/
+*.exe
+*.dll
+ms-playwright/
