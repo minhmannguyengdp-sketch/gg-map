@@ -135,7 +135,7 @@ $cleanTargets = @(
 )
 foreach ($target in $cleanTargets) {
     if (Test-Path $target) {
-        Remove-Item -LiteralPath $target -Recurse -Force
+        Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -205,8 +205,22 @@ Copy-Item -Path $exePath -Destination (Join-Path $appDist ("GG_map_7.9_new_v{0}.
 
 $saveDataTarget = Join-Path $appDist "Save_data"
 New-Item -ItemType Directory -Force -Path $saveDataTarget | Out-Null
-Copy-Item -Path (Join-Path $projectRoot "Save_data\ui_cao_map_license.json") -Destination (Join-Path $saveDataTarget "ui_cao_map_license.json") -Force
-Copy-Item -Path (Join-Path $projectRoot "Save_data\ui_cao_map_license_server.json") -Destination (Join-Path $saveDataTarget "ui_cao_map_license_server.json") -Force
+$saveDataSource = Join-Path $projectRoot "Save_data"
+New-Item -ItemType Directory -Force -Path $saveDataSource | Out-Null
+
+$licenseJsonPath = Join-Path $saveDataSource "ui_cao_map_license.json"
+if (-not (Test-Path $licenseJsonPath)) {
+    Set-Content -LiteralPath $licenseJsonPath -Value "{}" -NoNewline -Encoding utf8
+}
+
+$licenseServerJsonPath = Join-Path $saveDataSource "ui_cao_map_license_server.json"
+if (-not (Test-Path $licenseServerJsonPath)) {
+    Set-Content -LiteralPath $licenseServerJsonPath -Value '{"license_api_url":""}' -NoNewline -Encoding utf8
+}
+
+Get-ChildItem -LiteralPath $saveDataSource -File -Force | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $saveDataTarget $_.Name) -Force
+}
 
 $nextBuildVersion = Get-NextBuildVersionValue -Value $currentBuildVersion
 Set-Content -LiteralPath $buildVersionPath -Value $nextBuildVersion -NoNewline -Encoding ascii

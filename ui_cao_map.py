@@ -4,6 +4,7 @@ import json
 import math
 import os
 import platform
+import tempfile
 import queue
 import random
 import re
@@ -94,6 +95,9 @@ def launch_playwright_browser(playwright, headless=True, proxy=None):
         "headless": headless,
         "proxy": proxy,
     }
+    chrome_executable = "" if headless else get_system_chrome_executable()
+    if chrome_executable:
+        launch_args["executable_path"] = chrome_executable
     try:
         return playwright.chromium.launch(**launch_args)
     except Exception as exc:
@@ -107,17 +111,28 @@ def launch_playwright_browser(playwright, headless=True, proxy=None):
 
 
 def launch_playwright_persistent_context(playwright, context_args):
-    try:
-        return playwright.chromium.launch_persistent_context(**context_args)
-    except Exception as exc:
-        if "Executable doesn't exist" not in str(exc):
-            raise
+    fallback_args = dict(context_args)
+    if not context_args.get("headless", True):
         chrome_executable = get_system_chrome_executable()
-        if not chrome_executable:
-            raise
-        fallback_args = dict(context_args)
-        fallback_args["executable_path"] = chrome_executable
+        if chrome_executable:
+            fallback_args["executable_path"] = chrome_executable
+    try:
         return playwright.chromium.launch_persistent_context(**fallback_args)
+    except Exception as exc:
+        temp_args = dict(fallback_args)
+        temp_profile_dir = os.path.join(tempfile.gettempdir(), f"kbmaps_profile_{uuid.uuid4().hex}")
+        os.makedirs(temp_profile_dir, exist_ok=True)
+        temp_args["user_data_dir"] = temp_profile_dir
+        try:
+            return playwright.chromium.launch_persistent_context(**temp_args)
+        except Exception:
+            if "Executable doesn't exist" not in str(exc):
+                raise
+            chrome_executable = get_system_chrome_executable()
+            if not chrome_executable:
+                raise
+            fallback_args["executable_path"] = chrome_executable
+            return playwright.chromium.launch_persistent_context(**fallback_args)
 
 APP_THEME = {
     "bg": "#0B1220",
@@ -676,11 +691,11 @@ def make_card(parent, title, subtitle="", accent=None):
     tk.Frame(card, bg=accent, height=4).pack(fill=tk.X)
 
     header = tk.Frame(card, bg=APP_THEME["surface"])
-    header.pack(fill=tk.X, padx=18, pady=(14, 10))
+    header.pack(fill=tk.X, padx=12, pady=(10, 8))
     tk.Label(
         header,
         text=title,
-        font=(FONT_FAMILY, 13, "bold"),
+        font=(FONT_FAMILY, 12, "bold"),
         bg=APP_THEME["surface"],
         fg=APP_THEME["text"],
     ).pack(anchor="w")
@@ -696,7 +711,7 @@ def make_card(parent, title, subtitle="", accent=None):
         ).pack(anchor="w", pady=(4, 0))
 
     body = tk.Frame(card, bg=APP_THEME["surface"])
-    body.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 18))
+    body.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 10))
     return card, body
 
 
@@ -724,6 +739,371 @@ def make_stat_tile(parent, label_text, value="--", accent=None):
     )
     value_label.pack(anchor="w", padx=12, pady=(0, 10))
     return tile, value_label
+
+
+def make_preview_card(parent, title, subtitle="", accent=None, button_text="MỞ CHI TIẾT", command=None):
+    card, body = make_card(parent, title, subtitle, accent=accent)
+    body.grid_columnconfigure(0, weight=1)
+    return card, body
+
+
+def create_modal_popup(title, width=760, height=620):
+    popup = tk.Toplevel(root)
+    popup.title(title)
+    popup.configure(bg=APP_THEME["bg"])
+    popup.transient(root)
+    popup.grab_set()
+    popup.resizable(True, True)
+    center_window(popup, width, height)
+
+    shell = tk.Frame(popup, bg=APP_THEME["bg"])
+    shell.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+
+    card = tk.Frame(
+        shell,
+        bg=APP_THEME["surface"],
+        highlightbackground=APP_THEME["border"],
+        highlightthickness=1,
+        bd=0,
+    )
+    card.pack(fill=tk.BOTH, expand=True)
+    tk.Frame(card, bg=APP_THEME["accent"], height=4).pack(fill=tk.X)
+
+    header = tk.Frame(card, bg=APP_THEME["surface"])
+    header.pack(fill=tk.X, padx=18, pady=(14, 10))
+    tk.Label(
+        header,
+        text=title,
+        font=(FONT_FAMILY, 14, "bold"),
+        bg=APP_THEME["surface"],
+        fg=APP_THEME["text"],
+    ).pack(anchor="w")
+
+    body_wrap = tk.Frame(card, bg=APP_THEME["surface"])
+    body_wrap.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 12))
+    body_wrap.grid_rowconfigure(0, weight=1)
+    body_wrap.grid_columnconfigure(0, weight=1)
+
+    body_canvas = tk.Canvas(body_wrap, bg=APP_THEME["surface"], highlightthickness=0, bd=0)
+    body_canvas.grid(row=0, column=0, sticky="nsew")
+
+    body_scroll = ttk.Scrollbar(body_wrap, orient="vertical", command=body_canvas.yview, style="Vertical.TScrollbar")
+    body_scroll.grid(row=0, column=1, sticky="ns")
+    body_canvas.configure(yscrollcommand=body_scroll.set)
+
+    body = tk.Frame(body_canvas, bg=APP_THEME["surface"])
+    body_window = body_canvas.create_window((0, 0), window=body, anchor="nw")
+
+    def _sync_popup_region(_event=None):
+        body_canvas.configure(scrollregion=body_canvas.bbox("all"))
+
+    def _sync_popup_width(event):
+        body_canvas.itemconfigure(body_window, width=event.width)
+
+    body.bind("<Configure>", _sync_popup_region)
+    body_canvas.bind("<Configure>", _sync_popup_width)
+    return popup, body
+
+
+def open_runtime_settings_popup():
+    popup, body = create_modal_popup("Cấu hình vận hành", 820, 680)
+    body.grid_columnconfigure(0, weight=1)
+    body.grid_columnconfigure(1, weight=1)
+
+    field_threads = tk.Frame(body, bg=APP_THEME["surface"])
+    field_threads.grid(row=0, column=0, sticky="ew", padx=(0, 8), pady=(0, 12))
+    tk.Label(field_threads, text="Số luồng", font=(FONT_FAMILY, 9, "bold"), bg=APP_THEME["surface"], fg=APP_THEME["text"]).pack(anchor="w")
+    ent_threads_popup = tk.Spinbox(field_threads, from_=1, to=50, increment=1, wrap=True, textvariable=threads_var)
+    style_spinbox(ent_threads_popup)
+    ent_threads_popup.pack(fill=tk.X, ipady=10, pady=(8, 0))
+
+    field_size = tk.Frame(body, bg=APP_THEME["surface"])
+    field_size.grid(row=0, column=1, sticky="ew", padx=(8, 0), pady=(0, 12))
+    tk.Label(field_size, text="Kích thước cửa sổ", font=(FONT_FAMILY, 9, "bold"), bg=APP_THEME["surface"], fg=APP_THEME["text"]).pack(anchor="w")
+
+    size_inputs = tk.Frame(field_size, bg=APP_THEME["surface"])
+    size_inputs.pack(fill=tk.X, pady=(8, 0))
+    size_inputs.grid_columnconfigure(0, weight=1)
+    size_inputs.grid_columnconfigure(2, weight=1)
+
+    win_w_var = tk.StringVar(value=ent_win_w.get().strip())
+    win_h_var = tk.StringVar(value=ent_win_h.get().strip())
+    ent_win_w_popup = tk.Entry(size_inputs, textvariable=win_w_var)
+    style_entry(ent_win_w_popup, justify="center")
+    ent_win_w_popup.grid(row=0, column=0, sticky="ew")
+    tk.Label(size_inputs, text="x", font=(FONT_FAMILY, 11, "bold"), bg=APP_THEME["surface"], fg=APP_THEME["muted"]).grid(row=0, column=1, padx=8)
+    ent_win_h_popup = tk.Entry(size_inputs, textvariable=win_h_var)
+    style_entry(ent_win_h_popup, justify="center")
+    ent_win_h_popup.grid(row=0, column=2, sticky="ew")
+
+    headless_var_popup = tk.BooleanVar(value=var_headless.get())
+    chk_headless_popup = ttk.Checkbutton(body, text="Chạy ẩn (headless)", variable=headless_var_popup, style="Modern.TCheckbutton")
+    chk_headless_popup.grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 10))
+
+    stat_wrap = tk.Frame(body, bg=APP_THEME["surface"])
+    stat_wrap.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 10))
+    stat_wrap.grid_columnconfigure(0, weight=1)
+    stat_wrap.grid_columnconfigure(1, weight=1)
+    stat_wrap.grid_columnconfigure(2, weight=1)
+    stat_wrap.grid_columnconfigure(3, weight=1)
+
+    def apply_runtime_changes():
+        set_entry_value(ent_threads, ent_threads_popup.get())
+        set_entry_value(ent_win_w, win_w_var.get())
+        set_entry_value(ent_win_h, win_h_var.get())
+        var_headless.set(bool(headless_var_popup.get()))
+        update_runtime_badges()
+        popup.destroy()
+
+    make_button(body, "ÁP DỤNG", apply_runtime_changes, APP_THEME["accent"], APP_THEME["accent_hover"], width=12).grid(row=3, column=0, sticky="ew", pady=(6, 0), padx=(0, 8))
+    make_button(body, "ĐÓNG", popup.destroy, APP_THEME["panel_alt"], "#334155", width=12).grid(row=3, column=1, sticky="ew", pady=(6, 0), padx=(8, 0))
+
+    popup.bind("<Escape>", lambda _event: popup.destroy())
+    popup.focus_set()
+
+
+def open_proxy_settings_popup():
+    popup, body = create_modal_popup("Danh sách proxy", 820, 680)
+    body.grid_rowconfigure(1, weight=1)
+    body.grid_columnconfigure(0, weight=1)
+
+    tk.Label(body, text="Mỗi dòng một proxy. Để trống nếu không dùng proxy.", font=(FONT_FAMILY, 9), bg=APP_THEME["surface"], fg=APP_THEME["muted"]).grid(row=0, column=0, sticky="w", pady=(0, 10))
+    proxy_frame = tk.Frame(body, bg=APP_THEME["surface"])
+    proxy_frame.grid(row=1, column=0, sticky="nsew")
+    proxy_frame.grid_rowconfigure(0, weight=1)
+    proxy_frame.grid_columnconfigure(0, weight=1)
+
+    proxy_text = tk.Text(proxy_frame, height=16)
+    style_text_widget(proxy_text)
+    proxy_text.configure(wrap=tk.NONE)
+    proxy_text.insert("1.0", txt_px.get("1.0", tk.END).strip())
+    proxy_text.grid(row=0, column=0, sticky="nsew")
+
+    proxy_scroll = ttk.Scrollbar(proxy_frame, orient="vertical", command=proxy_text.yview, style="Vertical.TScrollbar")
+    proxy_scroll.grid(row=0, column=1, sticky="ns")
+    proxy_text.configure(yscrollcommand=proxy_scroll.set)
+
+    proxy_scroll_x = ttk.Scrollbar(proxy_frame, orient="horizontal", command=proxy_text.xview, style="Horizontal.TScrollbar")
+    proxy_scroll_x.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+    proxy_text.configure(xscrollcommand=proxy_scroll_x.set)
+
+    def apply_proxy_changes():
+        set_proxy_text(proxy_text.get("1.0", tk.END))
+        update_runtime_badges()
+        popup.destroy()
+
+    buttons = tk.Frame(body, bg=APP_THEME["surface"])
+    buttons.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+    make_button(buttons, "ÁP DỤNG", apply_proxy_changes, APP_THEME["violet"], "#7C3AED", width=12).pack(side=tk.LEFT, padx=(0, 8))
+    make_button(buttons, "ĐÓNG", popup.destroy, APP_THEME["panel_alt"], "#334155", width=12).pack(side=tk.LEFT)
+    popup.bind("<Escape>", lambda _event: popup.destroy())
+    popup.focus_set()
+
+
+def open_route_settings_popup():
+    popup, body = create_modal_popup("Tối ưu tuyến", 900, 720)
+    body.grid_columnconfigure(0, weight=1)
+    body.grid_columnconfigure(1, weight=1)
+    body.grid_columnconfigure(2, weight=1)
+
+    field_route_start = tk.Frame(body, bg=APP_THEME["surface"])
+    field_route_start.grid(row=0, column=0, columnspan=2, sticky="ew", padx=(0, 10), pady=(0, 12))
+    tk.Label(field_route_start, text="Điểm bắt đầu (tọa độ, link Maps hoặc địa chỉ)", font=(FONT_FAMILY, 9, "bold"), bg=APP_THEME["surface"], fg=APP_THEME["text"]).pack(anchor="w")
+    ent_route_start_popup = tk.Entry(field_route_start)
+    style_entry(ent_route_start_popup, justify="left")
+    ent_route_start_popup.insert(0, ent_route_start.get())
+    ent_route_start_popup.pack(fill=tk.X, ipady=10, pady=(8, 0))
+
+    field_route_pick = tk.Frame(body, bg=APP_THEME["surface"])
+    field_route_pick.grid(row=0, column=2, sticky="ew", pady=(0, 12))
+    tk.Label(field_route_pick, text="Hoặc chọn từ danh sách", font=(FONT_FAMILY, 9, "bold"), bg=APP_THEME["surface"], fg=APP_THEME["text"]).pack(anchor="w")
+    cmb_route_start_pick_popup = ttk.Combobox(field_route_pick, state="readonly", values=cmb_route_start_pick["values"])
+    cmb_route_start_pick_popup.set(cmb_route_start_pick.get())
+    cmb_route_start_pick_popup.pack(fill=tk.X, ipady=6, pady=(8, 0))
+
+    field_route_sort = tk.Frame(body, bg=APP_THEME["surface"])
+    field_route_sort.grid(row=1, column=0, sticky="ew", pady=(0, 12), padx=(0, 10))
+    tk.Label(field_route_sort, text="Kiểu sắp xếp", font=(FONT_FAMILY, 9, "bold"), bg=APP_THEME["surface"], fg=APP_THEME["text"]).pack(anchor="w")
+    cmb_route_sort_type_popup = ttk.Combobox(field_route_sort, state="readonly", values=["Gần nhất trước", "Thuận tuyến", "Tối ưu thời gian đi"])
+    cmb_route_sort_type_popup.set(cmb_route_sort_type.get())
+    cmb_route_sort_type_popup.pack(fill=tk.X, ipady=6, pady=(8, 0))
+
+    field_route_optimize = tk.Frame(body, bg=APP_THEME["surface"])
+    field_route_optimize.grid(row=1, column=1, sticky="ew", pady=(0, 12), padx=5)
+    tk.Label(field_route_optimize, text="Chế độ tối ưu", font=(FONT_FAMILY, 9, "bold"), bg=APP_THEME["surface"], fg=APP_THEME["text"]).pack(anchor="w")
+    cmb_route_optimize_popup = ttk.Combobox(field_route_optimize, state="readonly", values=["Nhanh", "Cân bằng", "Tiết kiệm"])
+    cmb_route_optimize_popup.set(cmb_route_optimize.get())
+    cmb_route_optimize_popup.pack(fill=tk.X, ipady=6, pady=(8, 0))
+
+    field_route_scope = tk.Frame(body, bg=APP_THEME["surface"])
+    field_route_scope.grid(row=1, column=2, sticky="ew", pady=(0, 12))
+    tk.Label(field_route_scope, text="Phạm vi áp dụng", font=(FONT_FAMILY, 9, "bold"), bg=APP_THEME["surface"], fg=APP_THEME["text"]).pack(anchor="w")
+    cmb_route_scope_popup = ttk.Combobox(field_route_scope, state="readonly", values=["Toàn bộ kết quả", "Chỉ các dòng đã chọn"])
+    cmb_route_scope_popup.set(cmb_route_scope.get())
+    cmb_route_scope_popup.pack(fill=tk.X, ipady=6, pady=(8, 0))
+
+    var_route_group_cluster_popup = tk.BooleanVar(value=var_route_group_cluster.get())
+    ttk.Checkbutton(body, text="Nhóm theo cụm tuyến khi xuất file", variable=var_route_group_cluster_popup, style="Modern.TCheckbutton").grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 10))
+
+    summary = tk.Frame(body, bg=APP_THEME["panel"], highlightbackground=APP_THEME["border"], highlightthickness=1, bd=0)
+    summary.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 12))
+    summary.grid_columnconfigure(1, weight=1)
+    tk.Label(summary, text="Điểm bắt đầu:", font=(FONT_FAMILY, 9, "bold"), bg=APP_THEME["panel"], fg=APP_THEME["muted"]).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 4))
+    tk.Label(summary, text=describe_route_start_source(), font=(FONT_FAMILY, 9), bg=APP_THEME["panel"], fg=APP_THEME["text"], justify="left", wraplength=620).grid(row=0, column=1, sticky="w", padx=8, pady=(10, 4))
+
+    def apply_route_changes():
+        set_entry_value(ent_route_start, ent_route_start_popup.get())
+        cmb_route_start_pick.set(cmb_route_start_pick_popup.get())
+        cmb_route_sort_type.set(cmb_route_sort_type_popup.get())
+        cmb_route_optimize.set(cmb_route_optimize_popup.get())
+        cmb_route_scope.set(cmb_route_scope_popup.get())
+        var_route_group_cluster.set(bool(var_route_group_cluster_popup.get()))
+        update_runtime_badges()
+        popup.destroy()
+
+    buttons = tk.Frame(body, bg=APP_THEME["surface"])
+    buttons.grid(row=4, column=0, columnspan=3, sticky="ew")
+    make_button(buttons, "ÁP DỤNG", apply_route_changes, APP_THEME["warning"], "#D97706", width=12).pack(side=tk.LEFT, padx=(0, 8))
+    make_button(buttons, "ĐÓNG", popup.destroy, APP_THEME["panel_alt"], "#334155", width=12).pack(side=tk.LEFT)
+    popup.bind("<Escape>", lambda _event: popup.destroy())
+    popup.focus_set()
+
+
+def open_search_settings_popup():
+    popup, body = create_modal_popup("Bộ lọc tìm kiếm", 820, 680)
+    body.grid_columnconfigure(0, weight=1)
+
+    tk.Label(
+        body,
+        text="Chỉ cần nhập khu vực hoặc tọa độ. Nếu để trống cả hai, app sẽ quét theo từ khóa.",
+        font=(FONT_FAMILY, 9),
+        bg=APP_THEME["surface"],
+        fg=APP_THEME["muted"],
+        justify="left",
+        wraplength=720,
+    ).grid(row=0, column=0, sticky="w", pady=(0, 10))
+
+    fields = tk.Frame(body, bg=APP_THEME["surface"])
+    fields.grid(row=1, column=0, sticky="ew")
+    fields.grid_columnconfigure(0, weight=1)
+    fields.grid_columnconfigure(1, weight=1)
+
+    def add_field(parent, row_index, label_text, default_value="", justify="left", column=0, columnspan=1):
+        container = tk.Frame(parent, bg=APP_THEME["surface"])
+        container.grid(row=row_index, column=column, columnspan=columnspan, sticky="ew", padx=(0, 10) if column == 0 and columnspan == 1 else 0, pady=(0, 12))
+        container.grid_columnconfigure(0, weight=1)
+        tk.Label(
+            container,
+            text=label_text,
+            font=(FONT_FAMILY, 9, "bold"),
+            bg=APP_THEME["surface"],
+            fg=APP_THEME["text"],
+        ).pack(anchor="w")
+        entry = tk.Entry(container)
+        style_entry(entry, justify=justify)
+        entry.insert(0, default_value)
+        entry.pack(fill=tk.X, ipady=10, pady=(8, 0))
+        return entry
+
+    loc_entry = add_field(fields, 0, "Khu vực", ent_loc.get())
+    kw_entry = add_field(fields, 0, "Từ khóa", ent_kw.get(), column=1)
+    limit_entry = add_field(fields, 1, "Mục tiêu", ent_lim.get(), justify="center")
+    radius_entry = add_field(fields, 1, "Bán kính quét (km)", ent_radius.get(), justify="center", column=1)
+    zoom_entry = add_field(fields, 2, "Zoom", ent_zoom.get(), justify="center")
+    lat_entry = add_field(fields, 2, "Vĩ độ", ent_lat.get(), column=1)
+    lng_entry = add_field(fields, 3, "Kinh độ", ent_lng.get())
+
+    preview = tk.Frame(
+        body,
+        bg=APP_THEME["panel"],
+        highlightbackground=APP_THEME["border"],
+        highlightthickness=1,
+        bd=0,
+    )
+    preview.grid(row=4, column=0, sticky="ew", pady=(14, 0))
+    preview_text = tk.Label(
+        preview,
+        text="--",
+        font=(FONT_FAMILY, 9),
+        bg=APP_THEME["panel"],
+        fg=APP_THEME["text"],
+        justify="left",
+        wraplength=700,
+    )
+    preview_text.pack(anchor="w", padx=12, pady=10)
+
+    def refresh_preview():
+        loc = loc_entry.get().strip()
+        kw = kw_entry.get().strip()
+        preview_text.config(
+            text=(
+                f"Khu vực: {loc or '--'}\n"
+                f"Từ khóa: {kw or '--'}\n"
+                f"Tọa độ: {lat_entry.get().strip() or '--'}, {lng_entry.get().strip() or '--'} | "
+                f"Bán kính: {radius_entry.get().strip() or '--'} km | Zoom: {zoom_entry.get().strip() or '--'}"
+            )
+        )
+
+    refresh_preview()
+
+    def apply_search_changes():
+        set_entry_value(ent_loc, loc_entry.get())
+        set_entry_value(ent_kw, kw_entry.get())
+        set_entry_value(ent_lim, limit_entry.get())
+        set_entry_value(ent_radius, radius_entry.get())
+        set_entry_value(ent_lat, lat_entry.get())
+        set_entry_value(ent_lng, lng_entry.get())
+        set_entry_value(ent_zoom, zoom_entry.get())
+        update_runtime_badges()
+        popup.destroy()
+
+    buttons = tk.Frame(body, bg=APP_THEME["surface"])
+    buttons.grid(row=5, column=0, sticky="ew", pady=(14, 0))
+    make_button(buttons, "ÁP DỤNG", apply_search_changes, APP_THEME["accent"], APP_THEME["accent_hover"], width=12).pack(side=tk.LEFT, padx=(0, 8))
+    make_button(buttons, "ĐÓNG", popup.destroy, APP_THEME["panel_alt"], "#334155", width=12).pack(side=tk.LEFT)
+    popup.bind("<Escape>", lambda _event: popup.destroy())
+    popup.focus_set()
+
+
+def open_control_popup():
+    popup, body = create_modal_popup("Điều khiển", 680, 420)
+    body.grid_columnconfigure(0, weight=1)
+
+    tk.Label(
+        body,
+        text="Trạng thái hiện tại",
+        font=(FONT_FAMILY, 9, "bold"),
+        bg=APP_THEME["surface"],
+        fg=APP_THEME["muted"],
+    ).grid(row=0, column=0, sticky="w", pady=(0, 6))
+
+    lbl_control_popup_status = tk.Label(
+        body,
+        text=lbl_stt.cget("text") if "lbl_stt" in globals() else "Sẵn sàng.",
+        font=(FONT_FAMILY, 10),
+        bg=APP_THEME["panel"],
+        fg=APP_THEME["text"],
+        justify="left",
+        wraplength=600,
+        highlightbackground=APP_THEME["border"],
+        highlightthickness=1,
+        padx=14,
+        pady=12,
+    )
+    lbl_control_popup_status.grid(row=1, column=0, sticky="ew")
+
+    tk.Label(
+        body,
+        text=f"Log lỗi: {BROWSER_ERROR_LOG_PATH}",
+        font=(FONT_FAMILY, 9),
+        bg=APP_THEME["surface"],
+        fg=APP_THEME["muted"],
+        justify="left",
+        wraplength=600,
+    ).grid(row=2, column=0, sticky="w", pady=(12, 0))
+
+    popup.bind("<Escape>", lambda _event: popup.destroy())
+    popup.focus_set()
 
 
 def setup_ttk_styles():
@@ -822,18 +1202,30 @@ def log_browser_worker_error(thread_id, phase, proxy_entry, exc):
     proxy_text = format_proxy_display(proxy_entry)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     error_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).strip()
-    with open(BROWSER_ERROR_LOG_PATH, "a", encoding="utf-8") as log_file:
-        log_file.write(
-            f"[{timestamp}] thread={thread_id} phase={phase} proxy={proxy_text}\n"
-            f"{error_text}\n\n"
-        )
+    payload = (
+        f"[{timestamp}] thread={thread_id} phase={phase} proxy={proxy_text}\n"
+        f"{error_text}\n\n"
+    )
+    try:
+        with open(BROWSER_ERROR_LOG_PATH, "a", encoding="utf-8") as log_file:
+            log_file.write(payload)
+    except Exception:
+        fallback_log = os.path.join(SAVE_DATA_DIR, "browser_worker_errors_fallback.log")
+        try:
+            with open(fallback_log, "a", encoding="utf-8") as log_file:
+                log_file.write(payload)
+        except Exception:
+            print(payload)
 
 
 def notify_browser_worker_error(thread_id, phase, proxy_entry, exc):
     error_text = safe_string(exc) or exc.__class__.__name__
     proxy_text = format_proxy_display(proxy_entry)
     message = f"Luồng {thread_id} lỗi ở bước {phase} ({proxy_text}): {error_text}"
-    log_browser_worker_error(thread_id, phase, proxy_entry, exc)
+    try:
+        log_browser_worker_error(thread_id, phase, proxy_entry, exc)
+    except Exception:
+        pass
     print(message)
     root.after(0, lambda msg=message: set_runtime_status(msg, "danger", "LỖI CHROME"))
 
@@ -888,8 +1280,38 @@ def default_route_values(row_data):
     return row_data
 
 
-def build_tree_row_values(row_data):
+def hydrate_result_row_fields(row_data):
     default_route_values(row_data)
+    known_keys = {
+        "_row_id",
+        "_route_selected",
+        "STT",
+        "TÃªn",
+        "SÄT",
+        "Äá»‹a chá»‰",
+        "name",
+        "phone",
+        "address",
+        "lat",
+        "lng",
+        "thu_tu_tuyen",
+        "cum_tuyen",
+        "khoang_cach_uoc_tinh",
+        "thoi_gian_uoc_tinh",
+        "ghi_chu_tuyen",
+    }
+    fallback_values = [row_data[key] for key in row_data.keys() if key not in known_keys]
+    if not safe_string(row_data.get("TÃªn")):
+        row_data["TÃªn"] = safe_string(row_data.get("name")) or (fallback_values[0] if len(fallback_values) > 0 else "")
+    if not safe_string(row_data.get("SÄT")):
+        row_data["SÄT"] = safe_string(row_data.get("phone")) or (fallback_values[1] if len(fallback_values) > 1 else "")
+    if not safe_string(row_data.get("Äá»‹a chá»‰")):
+        row_data["Äá»‹a chá»‰"] = safe_string(row_data.get("address")) or (fallback_values[2] if len(fallback_values) > 2 else "")
+    return row_data
+
+
+def build_tree_row_values(row_data):
+    hydrate_result_row_fields(row_data)
     return (
         "☑" if bool(row_data.get("_route_selected")) else "☐",
         row_data.get("STT", ""),
@@ -994,8 +1416,11 @@ def clear_results():
 
 
 def collect_route_export_rows():
+    with data_lock:
+        snapshot = [dict(row) for row in final_data]
+
     rows = []
-    for row_data in final_data:
+    for row_data in snapshot:
         default_route_values(row_data)
         rows.append(
             {
@@ -1030,19 +1455,24 @@ def export_route_data(file_path, grouped=False):
         export_df = export_df.drop(columns=["_sort_cluster", "_sort_route", "_sort_stt"])
 
     lower_path = file_path.lower()
-    if lower_path.endswith(".csv"):
-        export_df.to_csv(file_path, index=False, encoding="utf-8-sig")
-    else:
-        export_df.to_excel(file_path, index=False)
+    try:
+        if lower_path.endswith(".csv"):
+            export_df.to_csv(file_path, index=False, encoding="utf-8-sig")
+        else:
+            export_df.to_excel(file_path, index=False)
+    except PermissionError:
+        messagebox.showerror("Không thể xuất file", "File đang mở hoặc không có quyền ghi.")
+        return False
+    except OSError as exc:
+        if getattr(exc, "winerror", None) in {5, 32}:
+            messagebox.showerror("Không thể xuất file", "File đang mở hoặc không có quyền ghi.")
+            return False
+        raise
 
-    return True
+    return len(export_rows)
 
 
 def export_to_excel():
-    if not final_data:
-        messagebox.showwarning("Thiếu dữ liệu", "Chưa có dữ liệu để xuất Excel.")
-        return
-
     save_path = filedialog.asksaveasfilename(
         title="Lưu file Excel",
         defaultextension=".xlsx",
@@ -1051,8 +1481,10 @@ def export_to_excel():
     if not save_path:
         return
 
-    if export_route_data(save_path, grouped=False):
-        set_runtime_status(f"Đã xuất {len(final_data)} dòng dữ liệu ra file Excel.", "success", "XUẤT FILE")
+    exported_count = export_route_data(save_path, grouped=False)
+    if exported_count:
+        messagebox.showinfo("Xuất dữ liệu", f"Đã xuất {exported_count} dòng ra:\n{save_path}")
+        set_runtime_status(f"Đã xuất {exported_count} dòng dữ liệu ra file Excel: {save_path}", "success", "XUẤT FILE")
 
 
 def safe_float(value):
@@ -1514,6 +1946,21 @@ def resolve_start_anchor_from_controls():
     return None, None, ""
 
 
+def describe_route_start_source():
+    start_lat, start_lng, start_text = resolve_start_anchor_from_controls()
+    is_valid, _warning = validate_coordinate_range(start_lat, start_lng)
+    if is_valid:
+        return start_text or f"{format_coordinate_value(start_lat)}, {format_coordinate_value(start_lng)}"
+
+    selected_label = safe_string(cmb_route_start_pick.get()) if "cmb_route_start_pick" in globals() else ""
+    start_input = get_entry_clean_value(ent_route_start) if "ent_route_start" in globals() else ""
+    if start_input:
+        return f"Chưa xác định được tọa độ từ: {start_input}"
+    if selected_label:
+        return f"Đã chọn điểm: {selected_label}"
+    return "Chưa chọn"
+
+
 def get_rows_by_scope(scope_text):
     if scope_text == "Chỉ các dòng đã chọn":
         selected_ids = {str(row.get("_row_id")) for row in final_data if bool(row.get("_route_selected"))}
@@ -1547,9 +1994,7 @@ def update_route_summary_labels():
     sorted_rows.sort(key=lambda row: safe_int(row.get("thu_tu_tuyen"), 0))
     total_distance = sum(safe_float(row.get("khoang_cach_uoc_tinh")) or 0.0 for row in sorted_rows)
 
-    selected_start = get_entry_clean_value(ent_route_start) if "ent_route_start" in globals() else ""
-    picked_start = safe_string(cmb_route_start_pick.get()) if "cmb_route_start_pick" in globals() else ""
-    start_text = selected_start or picked_start or "Chưa chọn"
+    start_text = describe_route_start_source()
 
     lbl_route_start_value.config(text=start_text)
     lbl_route_order_value.config(text=str(len(sorted_rows)))
@@ -1718,15 +2163,13 @@ def open_route_on_google_maps():
     else:
         route_rows.sort(key=lambda row: safe_int(row.get("STT"), 0))
 
-    start_lat, start_lng, _start_text = resolve_start_anchor_from_controls()
+    start_lat, start_lng, start_text = resolve_start_anchor_from_controls()
     start_ok, _warn = validate_coordinate_range(start_lat, start_lng)
     if not start_ok:
-        first_row = route_rows[0]
-        start_lat = safe_float(first_row.get("lat"))
-        start_lng = safe_float(first_row.get("lng"))
-    start_ok, _warn = validate_coordinate_range(start_lat, start_lng)
-    if not start_ok:
-        messagebox.showwarning("Thiếu tọa độ", "Không xác định được điểm bắt đầu hợp lệ để mở tuyến Maps.")
+        messagebox.showwarning(
+            "Thiếu điểm bắt đầu",
+            "Hãy nhập tọa độ, dán URL Google Maps, hoặc chọn một điểm bắt đầu trước khi mở tuyến Maps.",
+        )
         return
 
     destination = route_rows[-1]
@@ -1754,7 +2197,7 @@ def open_route_on_google_maps():
         query_params["waypoints"] = "|".join(waypoint_tokens)
     maps_url = "https://www.google.com/maps/dir/?" + urllib_parse.urlencode(query_params, safe="|,")
     webbrowser.open(maps_url)
-    set_runtime_status("Đã mở tuyến trên Google Maps.", "info", "MAPS")
+    set_runtime_status(f"Đã mở tuyến trên Google Maps từ: {start_text}.", "info", "MAPS")
 
 
 def parse_proxy_line(proxy_line):
@@ -1944,6 +2387,7 @@ class ProxyPool:
 class PersistentProfileManager:
     def __init__(self, base_dir):
         self.base_dir = base_dir
+        self.session_key = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
         os.makedirs(self.base_dir, exist_ok=True)
 
     def get_profile_path(self, thread_slot, proxy_entry, anchor):
@@ -1957,7 +2401,7 @@ class PersistentProfileManager:
 
         key_material = f"{thread_slot}|{proxy_key}|{anchor_key}"
         digest = hashlib.sha256(key_material.encode("utf-8")).hexdigest()[:18]
-        profile_path = os.path.join(self.base_dir, f"profile_{thread_slot}_{digest}")
+        profile_path = os.path.join(self.base_dir, f"session_{self.session_key}", f"profile_{thread_slot}_{digest}")
         os.makedirs(profile_path, exist_ok=True)
         return profile_path
 
@@ -2005,12 +2449,39 @@ def resolve_location_text_to_anchor(location_text):
     }
 
 
-def resolve_location_anchor(location_text, latitude_text, longitude_text, zoom_text):
+def resolve_scan_radius_km(radius_text):
+    radius_value = safe_float(radius_text)
+    if radius_value is None:
+        radius_value = 5.0
+    return clamp(radius_value, 0.1, 1000.0)
+
+
+def resolve_location_anchor(location_text, latitude_text, longitude_text, zoom_text, radius_text):
     zoom = clamp(safe_int(zoom_text, 14), 3, 20)
+    radius_km = resolve_scan_radius_km(radius_text)
     now_ts = int(time.time())
     query = safe_string(location_text)
     manual_lat = normalize_coordinate_number(latitude_text)
     manual_lng = normalize_coordinate_number(longitude_text)
+
+    if manual_lat is not None and manual_lng is not None:
+        valid_range, warning_text = validate_coordinate_range(manual_lat, manual_lng)
+        if not valid_range:
+            return None, warning_text
+
+        return (
+            LocationAnchor(
+                query_text=query,
+                lat=manual_lat,
+                lng=manual_lng,
+                zoom=zoom,
+                radius_km=radius_km,
+                resolved_address="Manual anchor",
+                source="manual",
+                resolved_at=now_ts,
+            ),
+            "",
+        )
 
     if query:
         query_lat, query_lng, _query_error = parse_coordinates_or_maps_url(query)
@@ -2021,7 +2492,7 @@ def resolve_location_anchor(location_text, latitude_text, longitude_text, zoom_t
                     lat=query_lat,
                     lng=query_lng,
                     zoom=zoom,
-                    radius_km=5.0,
+                    radius_km=radius_km,
                     resolved_address="Google Maps URL" if query.lower().startswith(("http://", "https://")) else query,
                     source="url" if query.lower().startswith(("http://", "https://")) else "manual",
                     resolved_at=now_ts,
@@ -2048,7 +2519,7 @@ def resolve_location_anchor(location_text, latitude_text, longitude_text, zoom_t
                         lat=cached_lat,
                         lng=cached_lng,
                         zoom=zoom,
-                        radius_km=float(cached.get("radius_km") or 5.0),
+                        radius_km=radius_km,
                         resolved_address=safe_string(cached.get("resolved_address")) or query,
                         source="cache",
                         resolved_at=safe_int(cached.get("resolved_at"), now_ts),
@@ -2069,7 +2540,7 @@ def resolve_location_anchor(location_text, latitude_text, longitude_text, zoom_t
             lat=resolved["lat"],
             lng=resolved["lng"],
             zoom=zoom,
-            radius_km=5.0,
+            radius_km=radius_km,
             resolved_address=resolved["resolved_address"],
             source="geocode",
             resolved_at=now_ts,
@@ -2086,28 +2557,6 @@ def resolve_location_anchor(location_text, latitude_text, longitude_text, zoom_t
         }
         save_location_anchor_cache(cache)
         return anchor, ""
-
-    if safe_string(latitude_text) or safe_string(longitude_text):
-        if manual_lat is None or manual_lng is None:
-            return None, "Vui lòng nhập đúng cả vĩ độ và kinh độ."
-
-        valid_range, warning_text = validate_coordinate_range(manual_lat, manual_lng)
-        if not valid_range:
-            return None, warning_text
-
-        return (
-            LocationAnchor(
-                query_text=safe_string(location_text),
-                lat=manual_lat,
-                lng=manual_lng,
-                zoom=zoom,
-                radius_km=5.0,
-                resolved_address="Manual anchor",
-                source="manual",
-                resolved_at=now_ts,
-            ),
-            "",
-        )
 
     return None, "Thiếu khu vực và chưa có vĩ độ/kinh độ thủ công."
 
@@ -2161,14 +2610,14 @@ def dismiss_google_maps_overlays(page):
             continue
 
 
-def wait_for_google_maps_search_box(page, timeout=45000):
+def wait_for_google_maps_search_box(page, timeout=30000):
     search_box = page.locator("input#searchboxinput").first
     try:
         search_box.wait_for(state="visible", timeout=timeout)
         return search_box
     except Exception:
         alt_box = page.locator('input[name="q"]').first
-        alt_box.wait_for(state="visible", timeout=5000)
+        alt_box.wait_for(state="visible", timeout=min(4000, timeout))
         return alt_box
 
 
@@ -2205,6 +2654,164 @@ def wait_for_maps_results_state(page, timeout=30000):
         page.wait_for_timeout(800)
 
     return "timeout"
+
+
+def log_place_error(thread_id, url, exc):
+    ensure_save_data_dir()
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    error_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).strip()
+    payload = f"[{timestamp}] thread={thread_id} place_url={safe_string(url)}\n{error_text}\n\n"
+    try:
+        with open(BROWSER_ERROR_LOG_PATH, "a", encoding="utf-8") as log_file:
+            log_file.write(payload)
+    except Exception:
+        fallback_log = os.path.join(SAVE_DATA_DIR, "browser_worker_errors_fallback.log")
+        try:
+            with open(fallback_log, "a", encoding="utf-8") as log_file:
+                log_file.write(payload)
+        except Exception:
+            print(payload)
+
+
+def extract_place_row(page, item, url, place_name):
+    def first_text(*values):
+        for value in values:
+            text = safe_string(value)
+            if text:
+                return text
+        return ""
+
+    def read_detail_text(selectors):
+        for selector in selectors:
+            try:
+                locator = page.locator(selector)
+                if locator.count() == 0:
+                    continue
+
+                target = locator.first
+                for reader in (
+                    lambda node: node.inner_text(timeout=1500),
+                    lambda node: node.text_content(timeout=1500),
+                    lambda node: node.get_attribute("aria-label"),
+                    lambda node: node.get_attribute("title"),
+                ):
+                    try:
+                        text = safe_string(reader(target))
+                        if text:
+                            return text
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        return ""
+
+    item_name = ""
+    for accessor in (
+        lambda: item.get_attribute("aria-label"),
+        lambda: item.get_attribute("title"),
+        lambda: item.text_content(),
+        lambda: item.inner_text(timeout=1500),
+    ):
+        try:
+            item_name = first_text(accessor())
+            if item_name:
+                break
+        except Exception:
+            continue
+
+    name = first_text(place_name, item_name, url)
+    address = read_detail_text(
+        [
+            'button[data-item-id="address"]',
+            'button[aria-label*="Địa chỉ"]',
+            'button[aria-label*="Address"]',
+        ]
+    )
+    phone = read_detail_text(
+        [
+            'button[data-item-id*="phone"]',
+            'button[aria-label*="Số điện thoại"]',
+            'button[aria-label*="Phone"]',
+        ]
+    )
+    latitude, longitude = extract_coordinates_from_maps_text(url, page.url)
+
+    return {
+        "Tên": name,
+        "SĐT": phone,
+        "Địa chỉ": address,
+        "name": name,
+        "phone": phone,
+        "address": address,
+        "lat": latitude if latitude is not None else "",
+        "lng": longitude if longitude is not None else "",
+    }
+
+
+def open_maps_and_search(page, browser_context, keyword, fallback_keyword, anchor):
+    def run_search_with_box(query_text):
+        dismiss_google_maps_overlays(page)
+        search_box = wait_for_google_maps_search_box(page, timeout=25000)
+        try:
+            search_box.click()
+        except Exception:
+            pass
+        search_box.fill(query_text)
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(400)
+        dismiss_google_maps_overlays(page)
+        return wait_for_maps_results_state(page, timeout=30000)
+
+    def run_search_with_url(query_text):
+        page.goto(
+            build_maps_keyword_search_url(query_text, anchor),
+            wait_until="domcontentloaded",
+            timeout=45000,
+        )
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+        page.wait_for_timeout(400)
+        dismiss_google_maps_overlays(page)
+        return wait_for_maps_results_state(page, timeout=30000)
+
+    start_url = build_maps_search_url(anchor) if anchor else "https://www.google.com/maps?hl=vi"
+    page.goto(start_url, wait_until="domcontentloaded", timeout=45000)
+    try:
+        page.bring_to_front()
+    except Exception:
+        pass
+    if anchor:
+        try:
+            browser_context.grant_permissions(["geolocation"], origin="https://www.google.com")
+        except Exception:
+            pass
+
+    page.wait_for_timeout(350)
+    dismiss_google_maps_overlays(page)
+
+    search_state = None
+    box_failed = False
+    try:
+        search_state = run_search_with_box(keyword)
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+    except Exception:
+        box_failed = True
+
+    if box_failed or search_state == "timeout":
+        search_state = run_search_with_url(keyword)
+
+    if search_state in {"empty", "timeout"} and fallback_keyword and fallback_keyword != keyword:
+        try:
+            search_state = run_search_with_url(fallback_keyword)
+        except Exception:
+            search_state = "timeout"
+
+    return search_state
 
 
 def reset_profiles():
@@ -2260,6 +2867,7 @@ def collect_current_config():
         "latitude": get_entry_clean_value(ent_lat),
         "longitude": get_entry_clean_value(ent_lng),
         "zoom": ent_zoom.get().strip(),
+        "radius": get_entry_clean_value(ent_radius) if "ent_radius" in globals() else "",
         "limit": ent_lim.get().strip(),
         "threads": ent_threads.get().strip(),
         "window_width": ent_win_w.get().strip(),
@@ -2304,6 +2912,9 @@ def apply_last_config(config):
     ent_zoom.delete(0, tk.END)
     ent_zoom.insert(0, config.get("zoom", "14"))
 
+    if "ent_radius" in globals():
+        set_entry_value(ent_radius, config.get("radius", "5"))
+
     ent_lim.delete(0, tk.END)
     ent_lim.insert(0, config.get("limit", "100"))
 
@@ -2316,7 +2927,8 @@ def apply_last_config(config):
     ent_win_h.delete(0, tk.END)
     ent_win_h.insert(0, config.get("window_height", "500"))
 
-    var_headless.set(bool(config.get("headless", False)))
+    # Mặc định luôn chạy hiện để người dùng thấy Chrome; headless chỉ bật thủ công trong phiên này.
+    var_headless.set(False)
     set_proxy_text(config.get("proxies", []))
 
     if "ent_route_start" in globals():
@@ -2497,7 +3109,126 @@ def update_runtime_badges(_event=None):
     lbl_proxy_value.config(text=str(proxy_count))
     lbl_mode_value.config(text="Ẩn" if var_headless.get() else "Hiện")
     lbl_window_note.config(text=f"Kích thước trình duyệt: {width_text} x {height_text} px")
+
+    if "runtime_preview_summary" in globals():
+        runtime_preview_summary.config(
+            text=(
+                f"Luồng: {thread_text} | Cửa sổ: {width_text} x {height_text} | "
+                f"Chế độ: {'Ẩn' if var_headless.get() else 'Hiện'}"
+            )
+        )
+
+    if "proxy_preview_summary" in globals():
+        preview_lines = get_proxy_list()
+        first_proxy = safe_string(preview_lines[0]) if preview_lines else "Không dùng proxy"
+        proxy_preview_summary.config(
+            text=(
+                f"Số proxy: {proxy_count} | Xem nhanh: {first_proxy}"
+            )
+        )
+
+    if "control_preview_summary_label" in globals():
+        control_preview_summary_label.config(
+            text=(
+                f"Trạng thái: {safe_string(lbl_stt.cget('text')) if 'lbl_stt' in globals() else '--'}"
+            )
+        )
+
+    if "route_preview_summary" in globals():
+        route_preview_summary.config(
+            text=(
+                f"Điểm bắt đầu: {describe_route_start_source()} | "
+                f"Kiểu: {safe_string(cmb_route_sort_type.get())} | "
+                f"Tối ưu: {safe_string(cmb_route_optimize.get())} | "
+                f"Phạm vi: {safe_string(cmb_route_scope.get())}"
+            )
+        )
+
     update_route_summary_labels()
+    update_search_context_labels()
+
+
+def update_search_context_labels(_event=None):
+    if "lbl_scan_area_value" not in globals():
+        return
+
+    loc = get_entry_clean_value(ent_loc) if "ent_loc" in globals() else ""
+    kw = get_entry_clean_value(ent_kw) if "ent_kw" in globals() else ""
+    lat_text = get_entry_clean_value(ent_lat) if "ent_lat" in globals() else ""
+    lng_text = get_entry_clean_value(ent_lng) if "ent_lng" in globals() else ""
+    zoom_text = get_entry_clean_value(ent_zoom) if "ent_zoom" in globals() else ""
+    radius_text = get_entry_clean_value(ent_radius) if "ent_radius" in globals() else ""
+    selected_start = safe_string(cmb_route_start_pick.get()) if "cmb_route_start_pick" in globals() else ""
+
+    manual_lat = normalize_coordinate_number(lat_text) if lat_text else None
+    manual_lng = normalize_coordinate_number(lng_text) if lng_text else None
+    manual_ok, _manual_warn = validate_coordinate_range(manual_lat, manual_lng)
+    has_manual_coordinates = bool(lat_text) or bool(lng_text)
+    radius_km = resolve_scan_radius_km(radius_text)
+    radius_display = f"{radius_km:g} km"
+
+    if loc:
+        if manual_ok:
+            area_text = f"{loc} (ưu tiên khu vực, tọa độ nhập tay hiện có sẽ không được dùng)"
+        else:
+            area_text = loc
+    elif manual_ok:
+        area_text = "Theo tọa độ nhập tay"
+    elif selected_start:
+        area_text = f"Đang chọn điểm tuyến: {selected_start}"
+    else:
+        area_text = "Chưa có khu vực"
+
+    if manual_ok:
+        anchor_text = f"{format_coordinate_value(manual_lat)}, {format_coordinate_value(manual_lng)} (tọa độ nhập tay, bán kính {radius_display})"
+    elif loc:
+        if has_manual_coordinates:
+            anchor_text = (
+                f"Sẽ geocode từ khu vực '{loc}'"
+                f"{f' (zoom {zoom_text or 14})' if zoom_text else ''}"
+                f"; tọa độ nhập tay đang có: {lat_text or '--'}, {lng_text or '--'}"
+                f" (không ưu tiên, bán kính {radius_display})"
+            )
+        else:
+            anchor_text = f"Sẽ geocode từ khu vực '{loc}'{f' (zoom {zoom_text or 14})' if zoom_text else ''}, bán kính {radius_display}"
+    elif selected_start:
+        anchor_text = f"Lấy từ điểm chọn trong tuyến: {selected_start} (bán kính {radius_display})"
+    else:
+        anchor_text = f"Chưa có tọa độ mốc (bán kính {radius_display})"
+
+    if loc:
+        priority_text = "khu vực nhập tay"
+    elif manual_ok:
+        priority_text = "tọa độ nhập tay"
+    elif selected_start:
+        priority_text = "điểm tuyến đã chọn"
+    else:
+        priority_text = "chưa có mốc"
+
+    if loc:
+        query_main = f"{kw} tại {loc}".strip() if kw else loc
+        query_fallback = kw or loc
+    else:
+        query_main = kw
+        query_fallback = kw
+
+    lbl_scan_area_value.config(text=area_text or "--")
+    lbl_scan_anchor_value.config(text=anchor_text or "--")
+    lbl_scan_query_value.config(
+        text=(
+            f"Ưu tiên: {priority_text} | Bán kính: {radius_display} | "
+            f"Chính: {query_main or '--'} | "
+            f"Dự phòng: {query_fallback or '--'}"
+        )
+    )
+    if "search_preview_summary_label" in globals():
+        search_preview_summary_label.config(
+            text=(
+                f"Khu vực: {area_text or '--'}\n"
+                f"Mốc: {anchor_text or '--'}\n"
+                f"Query: {query_main or '--'}"
+            )
+        )
 
 
 def check_license():
@@ -2604,7 +3335,7 @@ def configure_license_server_from_login():
         )
 
 
-def scraper_worker(thread_id, keyword, fallback_keyword, proxy_pool, profile_manager, anchor, target_limit, headless, win_w, win_h, pos_x, pos_y):
+def _scraper_worker_legacy_direct(thread_id, keyword, fallback_keyword, proxy_pool, profile_manager, anchor, target_limit, headless, win_w, win_h, pos_x, pos_y):
     global active_threads, final_data, is_running, seen_urls, next_row_id
 
     attempts_limit = 3 if proxy_pool and proxy_pool.has_proxies else 1
@@ -2819,7 +3550,7 @@ def scraper_worker(thread_id, keyword, fallback_keyword, proxy_pool, profile_man
             root.after(0, reset_ui)
 
 
-def scraper_worker(thread_id, keyword, fallback_keyword, proxy_pool, profile_manager, anchor, target_limit, headless, win_w, win_h, pos_x, pos_y):
+def _scraper_worker_legacy_proxy(thread_id, keyword, fallback_keyword, proxy_pool, profile_manager, anchor, target_limit, headless, win_w, win_h, pos_x, pos_y):
     global active_threads, final_data, is_running, seen_urls, next_row_id
 
     attempts_limit = 3 if proxy_pool and proxy_pool.has_proxies else 1
@@ -2828,12 +3559,15 @@ def scraper_worker(thread_id, keyword, fallback_keyword, proxy_pool, profile_man
     last_error = ""
 
     def run_session(proxy_entry):
+        global next_row_id
         nonlocal last_error
 
         profile_path = profile_manager.get_profile_path(thread_id, proxy_entry, anchor)
         proxy_config = build_playwright_proxy(proxy_entry)
         browser_context = None
+        detail_page = None
         session_has_results = False
+        keep_browser_visible_on_error = False
 
         try:
             if proxy_entry:
@@ -2843,6 +3577,15 @@ def scraper_worker(thread_id, keyword, fallback_keyword, proxy_pool, profile_man
                         f"Luong {thread_id} dung {p['server']} (score {int(p.get('health_score', 0))})",
                         "info",
                         "DANG CHAY",
+                    ),
+                )
+            else:
+                root.after(
+                    0,
+                    lambda: set_runtime_status(
+                        f"Luong {thread_id} dang mo Chrome de vao Maps...",
+                        "info",
+                        "DANG MO CHROME",
                     ),
                 )
 
@@ -2858,6 +3601,7 @@ def scraper_worker(thread_id, keyword, fallback_keyword, proxy_pool, profile_man
                     "args": [
                         f"--window-position={pos_x},{pos_y}",
                         f"--window-size={win_w},{win_h}",
+                        "--start-maximized",
                         "--disable-blink-features=AutomationControlled",
                         "--force-device-scale-factor=0.8",
                     ],
@@ -2867,41 +3611,38 @@ def scraper_worker(thread_id, keyword, fallback_keyword, proxy_pool, profile_man
                     context_args["permissions"] = ["geolocation"]
 
                 browser_context = launch_playwright_persistent_context(playwright, context_args)
+                root.after(
+                    0,
+                    lambda: set_runtime_status(
+                        f"Luong {thread_id} da mo Chrome, dang vao Google Maps...",
+                        "info",
+                        "MỞ MAPS",
+                    ),
+                )
+                if not headless:
+                    time.sleep(4)
                 page = browser_context.pages[0] if browser_context.pages else browser_context.new_page()
                 page.set_default_timeout(15000)
                 page.set_default_navigation_timeout(30000)
+                detail_page = None
                 if not is_running:
                     browser_context.close()
                     return False
 
-                maps_url = build_maps_search_url(anchor)
-                page.goto(maps_url, wait_until="domcontentloaded", timeout=60000)
-                page.wait_for_timeout(2000)
-                if anchor:
-                    try:
-                        browser_context.grant_permissions(["geolocation"], origin="https://www.google.com")
-                    except Exception:
-                        pass
+                try:
+                    detail_page = browser_context.new_page()
+                    detail_page.set_default_timeout(12000)
+                    detail_page.set_default_navigation_timeout(20000)
+                except Exception as detail_page_exc:
+                    log_place_error(thread_id, "", detail_page_exc)
+                    detail_page = None
 
-                dismiss_google_maps_overlays(page)
-                wait_for_google_maps_search_box(page, timeout=45000)
-
-                def submit_search(query_text):
-                    page.goto(
-                        build_maps_keyword_search_url(query_text, anchor),
-                        wait_until="domcontentloaded",
-                        timeout=60000,
-                    )
-                    page.wait_for_timeout(2000)
-                    dismiss_google_maps_overlays(page)
-                    return wait_for_maps_results_state(page, timeout=30000)
-
-                search_state = submit_search(keyword)
-                if search_state in {"empty", "timeout"} and fallback_keyword and fallback_keyword != keyword:
-                    search_state = submit_search(fallback_keyword)
+                search_state = open_maps_and_search(page, browser_context, keyword, fallback_keyword, anchor)
+                results_page_url = page.url
 
                 if search_state == "empty":
                     last_error = f"Khong tim thay ket qua cho tu khoa '{keyword}'."
+                    keep_browser_visible_on_error = not headless
                     root.after(
                         0,
                         lambda: set_runtime_status(
@@ -2914,6 +3655,7 @@ def scraper_worker(thread_id, keyword, fallback_keyword, proxy_pool, profile_man
 
                 if search_state == "timeout":
                     last_error = "Google Maps khong tra ve danh sach ket qua dung han."
+                    keep_browser_visible_on_error = not headless
                     root.after(
                         0,
                         lambda: set_runtime_status(
@@ -2951,11 +3693,12 @@ def scraper_worker(thread_id, keyword, fallback_keyword, proxy_pool, profile_man
                                 ),
                             )
                             break
+                        detail_page = None
                         try:
                             feed.evaluate("el => el.scrollTop += 1000")
                         except Exception:
                             page.mouse.wheel(0, 1000)
-                        time.sleep(2)
+                        page.wait_for_timeout(1200)
                         continue
 
                     empty_rounds = 0
@@ -2973,29 +3716,36 @@ def scraper_worker(thread_id, keyword, fallback_keyword, proxy_pool, profile_man
                                 continue
 
                         place_name = item.get_attribute("aria-label") or "N/A"
+                        name = place_name
+                        addr = "N/A"
+                        phone = "N/A"
+                        latitude, longitude = extract_coordinates_from_maps_text(url)
+                        detail_page = None
 
                         try:
                             if page.locator("text='Đăng nhập'").is_visible(timeout=500):
                                 page.keyboard.press("Escape")
 
-                            try:
-                                item.click(timeout=5000)
-                            except Exception:
-                                page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                            time.sleep(2.5)
+                            detail_page = browser_context.new_page()
+                            detail_page.set_default_timeout(15000)
+                            detail_page.set_default_navigation_timeout(30000)
+                            detail_page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                            detail_page.wait_for_timeout(2000)
+                            dismiss_google_maps_overlays(detail_page)
 
-                            soup = BeautifulSoup(page.content(), "html.parser")
-                            name = place_name
+                            soup = BeautifulSoup(detail_page.content(), "html.parser")
 
                             addr_tag = soup.find("button", {"data-item-id": "address"})
-                            addr = addr_tag.get_text(strip=True) if addr_tag else "N/A"
+                            if addr_tag:
+                                addr = addr_tag.get_text(strip=True) or "N/A"
 
                             phone_tag = soup.find(
                                 "button",
                                 {"data-item-id": lambda value: value and "phone" in value},
                             )
-                            phone = phone_tag.get_text(strip=True) if phone_tag else "N/A"
-                            latitude, longitude = extract_coordinates_from_maps_text(url, page.url)
+                            if phone_tag:
+                                phone = phone_tag.get_text(strip=True) or "N/A"
+                            latitude, longitude = extract_coordinates_from_maps_text(url, detail_page.url)
 
                             with data_lock:
                                 if url in seen_urls:
@@ -3031,8 +3781,78 @@ def scraper_worker(thread_id, keyword, fallback_keyword, proxy_pool, profile_man
                                     "DANG QUET",
                                 ),
                             )
-                        except Exception:
-                            continue
+                        except Exception as exc:
+                            log_browser_worker_error(thread_id, "doc chi tiet dia diem", proxy_entry, exc)
+                        finally:
+                            try:
+                                if detail_page:
+                                    detail_page.close()
+                            except Exception:
+                                pass
+
+                        row_lat = safe_float(row_data.get("lat"))
+                        row_lng = safe_float(row_data.get("lng"))
+                        if anchor and row_lat is not None and row_lng is not None:
+                            distance_from_anchor = haversine_km(anchor.lat, anchor.lng, row_lat, row_lng) or 0.0
+                            if distance_from_anchor > max(anchor.radius_km or 0.0, 0.0):
+                                with data_lock:
+                                    seen_urls.add(url)
+                                log_place_error(
+                                    thread_id,
+                                    url,
+                                    ValueError(
+                                        f"Bo qua vi nam ngoai ban kinh {anchor.radius_km:g} km "
+                                        f"(khoang cach {distance_from_anchor:.2f} km)"
+                                    ),
+                                )
+                                continue
+
+                        with data_lock:
+                            if url in seen_urls:
+                                continue
+                            seen_urls.add(url)
+                            row_id = next_row_id
+                            next_row_id += 1
+                            row_idx = len(final_data) + 1
+                            row_data = {
+                                "_row_id": row_id,
+                                "STT": row_idx,
+                                "TÃªn": name,
+                                "SÄT": phone,
+                                "Äá»‹a chá»‰": addr,
+                                "lat": latitude if latitude is not None else "",
+                                "lng": longitude if longitude is not None else "",
+                                "thu_tu_tuyen": "",
+                                "cum_tuyen": "",
+                                "khoang_cach_uoc_tinh": "",
+                                "thoi_gian_uoc_tinh": "",
+                                "ghi_chu_tuyen": "",
+                            }
+                            row_data["T\u00ean"] = name
+                            row_data["S\u0110T"] = phone
+                            row_data["\u0110\u1ecba ch\u1ec9"] = addr
+                            row_data["T\u00ean"] = name
+                            row_data["S\u0110T"] = phone
+                            row_data["\u0110\u1ecba ch\u1ec9"] = addr
+                            final_data.append(row_data)
+                            new_rows_this_round += 1
+                            session_has_results = True
+                            row_data["T\u00ean"] = name
+                            row_data["S\u0110T"] = phone
+                            row_data["\u0110\u1ecba ch\u1ec9"] = addr
+
+                        row_data["name"] = name
+                        row_data["phone"] = phone
+                        row_data["address"] = addr
+                        root.after(0, lambda row=dict(row_data): insert_result_row(row))
+                        root.after(
+                            0,
+                            lambda current=row_idx, total=target_limit: set_runtime_status(
+                                f"Tien do hien tai: {current}/{total} doanh nghiep.",
+                                "info",
+                                "DANG QUET",
+                            ),
+                        )
 
                     if new_rows_this_round:
                         stall_rounds = 0
@@ -3053,10 +3873,392 @@ def scraper_worker(thread_id, keyword, fallback_keyword, proxy_pool, profile_man
                         feed.evaluate("el => el.scrollTop += 5000")
                     except Exception:
                         page.mouse.wheel(0, 5000)
-                    time.sleep(3)
+                    page.wait_for_timeout(1500)
 
                     page_content = page.content()
                     if "Bạn đã đi đến cuối danh sách" in page_content or "Không tìm thấy kết quả nào khác" in page_content:
+                        break
+
+                if not session_has_results:
+                    last_error = "Da mo Google Maps nhung khong thu duoc doanh nghiep nao."
+                    keep_browser_visible_on_error = not headless
+                    root.after(
+                        0,
+                        lambda: set_runtime_status(
+                            "Da mo Google Maps nhung khong lay duoc doanh nghiep nao. Hay doi bo loc hoac vi tri.",
+                            "warning",
+                            "KHONG CO DU LIEU",
+                        ),
+                    )
+                    return False
+
+                if proxy_pool and proxy_entry:
+                    proxy_pool.report_success(proxy_entry)
+                return True
+        except Exception as exc:
+            last_error = str(exc)
+            keep_browser_visible_on_error = not headless
+            notify_browser_worker_error(thread_id, "khởi tạo/truy cập Maps", proxy_entry, exc)
+            if proxy_pool and proxy_entry:
+                cooldown = proxy_pool.report_failure(proxy_entry)
+                root.after(
+                    0,
+                    lambda p=proxy_entry, cd=cooldown: set_runtime_status(
+                        f"Proxy {p['server']} loi, cooldown {cd}s",
+                        "warning",
+                        "PROXY RETRY",
+                    ),
+                )
+            if browser_context and not headless:
+                time.sleep(8 if keep_browser_visible_on_error else 5)
+            return False
+        finally:
+            if browser_context:
+                try:
+                    browser_context.close()
+                except Exception:
+                    pass
+
+    if is_running and proxy_pool and proxy_pool.has_proxies:
+        while is_running and attempt < attempts_limit and not worker_success:
+            proxy_entry = proxy_pool.acquire() if proxy_pool and proxy_pool.has_proxies else None
+            if proxy_pool and proxy_pool.has_proxies and not proxy_entry:
+                time.sleep(1)
+                attempt += 1
+                continue
+
+            worker_success = run_session(proxy_entry)
+            if not worker_success:
+                attempt += 1
+                time.sleep(1.2)
+
+        if not worker_success and is_running:
+            root.after(
+                0,
+                lambda: set_runtime_status(
+                    "Tat ca proxy deu that bai, thu lai theo che do direct de khoanh vung loi.",
+                    "warning",
+                    "DIRECT FALLBACK",
+                ),
+            )
+            worker_success = run_session(None)
+    elif is_running:
+        root.after(
+            0,
+            lambda: set_runtime_status(
+                "Dang chay truc tiep khong proxy.",
+                "info",
+                "DIRECT",
+            ),
+        )
+        worker_success = run_session(None)
+
+    if not worker_success and last_error:
+        print(f"Luong {thread_id} ket thuc voi loi: {last_error}")
+
+    with data_lock:
+        active_threads -= 1
+        if active_threads <= 0:
+            root.after(0, reset_ui)
+
+def scraper_worker(thread_id, keyword, fallback_keyword, proxy_pool, profile_manager, anchor, target_limit, headless, win_w, win_h, pos_x, pos_y):
+    global active_threads, final_data, is_running, seen_urls, next_row_id
+
+    attempts_limit = 3 if proxy_pool and proxy_pool.has_proxies else 1
+    attempt = 0
+    worker_success = False
+    last_error = ""
+
+    def run_session(proxy_entry):
+        global next_row_id
+        nonlocal last_error
+
+        profile_path = profile_manager.get_profile_path(thread_id, proxy_entry, anchor)
+        proxy_config = build_playwright_proxy(proxy_entry)
+        browser_context = None
+        detail_page = None
+        session_has_results = False
+
+        try:
+            if proxy_entry:
+                root.after(
+                    0,
+                    lambda p=proxy_entry: set_runtime_status(
+                        f"Luong {thread_id} dung {p['server']} (score {int(p.get('health_score', 0))})",
+                        "info",
+                        "DANG CHAY",
+                    ),
+                )
+
+            with sync_playwright() as playwright:
+                context_args = {
+                    "user_data_dir": profile_path,
+                    "headless": headless,
+                    "proxy": proxy_config,
+                    "locale": "vi-VN",
+                    "timezone_id": "Asia/Ho_Chi_Minh",
+                    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "viewport": {"width": 1280, "height": 720},
+                    "args": [
+                        f"--window-position={pos_x},{pos_y}",
+                        f"--window-size={win_w},{win_h}",
+                        "--disable-blink-features=AutomationControlled",
+                        "--force-device-scale-factor=0.8",
+                    ],
+                }
+                if anchor:
+                    context_args["geolocation"] = {"latitude": anchor.lat, "longitude": anchor.lng}
+                    context_args["permissions"] = ["geolocation"]
+
+                browser_context = launch_playwright_persistent_context(playwright, context_args)
+                page = browser_context.pages[0] if browser_context.pages else browser_context.new_page()
+                page.set_default_timeout(15000)
+                page.set_default_navigation_timeout(30000)
+                if not headless:
+                    try:
+                        page.bring_to_front()
+                    except Exception:
+                        pass
+                    try:
+                        page.wait_for_timeout(1500)
+                    except Exception:
+                        pass
+                if not is_running:
+                    browser_context.close()
+                    return False
+
+                if not headless:
+                    time.sleep(3)
+                search_state = open_maps_and_search(page, browser_context, keyword, fallback_keyword, anchor)
+                if not headless:
+                    try:
+                        page.bring_to_front()
+                    except Exception:
+                        pass
+                results_page_url = page.url
+
+                if search_state == "empty":
+                    last_error = f"Khong tim thay ket qua cho tu khoa '{keyword}'."
+                    root.after(
+                        0,
+                        lambda: set_runtime_status(
+                            "Khong tim thay ket qua tren Google Maps voi bo loc hien tai.",
+                            "warning",
+                            "KHONG CO DU LIEU",
+                        ),
+                    )
+                    return False
+
+                if search_state == "timeout":
+                    last_error = "Google Maps khong tra ve danh sach ket qua dung han."
+                    root.after(
+                        0,
+                        lambda: set_runtime_status(
+                            "Google Maps tai qua lau hoac khong mo duoc danh sach ket qua.",
+                            "danger",
+                            "LOI CHROME",
+                        ),
+                    )
+                    return False
+
+                results_page_url = page.url
+                empty_rounds = 0
+                stall_rounds = 0
+                stall_limit = 6
+
+                while is_running and len(final_data) < target_limit:
+                    feed = page.locator('div[role="feed"]')
+                    items = page.locator('a[href*="/maps/place/"]').all()
+
+                    if not items:
+                        empty_rounds += 1
+                        stall_rounds += 1
+                        if stall_rounds >= stall_limit:
+                            root.after(
+                                0,
+                                lambda: set_runtime_status(
+                                    "Khong con du lieu moi sau nhieu lan cuon, tu dung de tranh quay vo han.",
+                                    "warning",
+                                    "DUNG QUET",
+                                ),
+                            )
+                            break
+                        try:
+                            feed.evaluate("el => el.scrollTop += 1000")
+                        except Exception:
+                            page.mouse.wheel(0, 1000)
+                        time.sleep(2)
+                        continue
+
+                    empty_rounds = 0
+                    new_rows_this_round = 0
+                    pending_urls = set()
+                    candidate_urls = []
+                    for item in items:
+                        if not is_running or len(final_data) >= target_limit:
+                            break
+
+                        url = item.get_attribute("href")
+                        if not url:
+                            continue
+
+                        with data_lock:
+                            if url in seen_urls or url in pending_urls:
+                                continue
+
+                        place_name = ""
+                        for accessor in (
+                            lambda: item.get_attribute("aria-label"),
+                            lambda: item.get_attribute("title"),
+                            lambda: item.text_content(),
+                            lambda: item.inner_text(timeout=1500),
+                        ):
+                            try:
+                                place_name = safe_string(accessor())
+                                if place_name:
+                                    break
+                            except Exception:
+                                continue
+
+                        pending_urls.add(url)
+                        candidate_urls.append(
+                            {
+                                "url": url,
+                                "item": item,
+                                "place_name": place_name or "N/A",
+                            }
+                        )
+
+                    for item_data in candidate_urls:
+                        if not is_running or len(final_data) >= target_limit:
+                            break
+
+                        url = item_data["url"]
+                        item = item_data["item"]
+                        place_name = item_data["place_name"]
+                        row_data = None
+
+                        if detail_page is None:
+                            try:
+                                detail_page = browser_context.new_page()
+                                detail_page.set_default_timeout(12000)
+                                detail_page.set_default_navigation_timeout(20000)
+                            except Exception as detail_page_exc:
+                                log_place_error(thread_id, "", detail_page_exc)
+                                detail_page = None
+
+                        used_main_page = detail_page is None
+
+                        try:
+                            if page.locator("text='Đăng nhập'").is_visible(timeout=500):
+                                page.keyboard.press("Escape")
+
+                            try:
+                                item.scroll_into_view_if_needed(timeout=2000)
+                            except Exception:
+                                pass
+
+                            try:
+                                active_detail_page = detail_page or page
+                                active_detail_page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                                active_detail_page.wait_for_timeout(600)
+                                dismiss_google_maps_overlays(active_detail_page)
+                                row_data = extract_place_row(active_detail_page, item, url, place_name)
+                            except Exception as detail_exc:
+                                log_place_error(thread_id, url, detail_exc)
+                        except Exception as exc:
+                            log_place_error(thread_id, url, exc)
+                        finally:
+                            if used_main_page:
+                                try:
+                                    page.goto(results_page_url, wait_until="domcontentloaded", timeout=30000)
+                                    page.wait_for_timeout(600)
+                                    dismiss_google_maps_overlays(page)
+                                    wait_for_maps_results_state(page, timeout=15000)
+                                except Exception as restore_exc:
+                                    log_place_error(thread_id, results_page_url, restore_exc)
+
+                        if row_data is None:
+                            latitude, longitude = extract_coordinates_from_maps_text(url, page.url)
+                            row_data = {
+                                "Tên": place_name or safe_string(url),
+                                "SĐT": "",
+                                "Địa chỉ": "",
+                                "name": place_name or safe_string(url),
+                                "phone": "",
+                                "address": "",
+                                "lat": latitude if latitude is not None else "",
+                                "lng": longitude if longitude is not None else "",
+                            }
+
+                        if not safe_string(row_data.get("Tên")):
+                            row_data["Tên"] = safe_string(place_name) or safe_string(url)
+                        if not safe_string(row_data.get("SĐT")):
+                            row_data["SĐT"] = ""
+                        if not safe_string(row_data.get("Địa chỉ")):
+                            row_data["Địa chỉ"] = ""
+                        if not safe_string(row_data.get("name")):
+                            row_data["name"] = safe_string(row_data.get("Tên"))
+                        if not safe_string(row_data.get("phone")):
+                            row_data["phone"] = safe_string(row_data.get("SĐT"))
+                        if not safe_string(row_data.get("address")):
+                            row_data["address"] = safe_string(row_data.get("Địa chỉ"))
+
+                        with data_lock:
+                            if url in seen_urls:
+                                continue
+                            seen_urls.add(url)
+                            row_id = next_row_id
+                            next_row_id += 1
+                            row_idx = len(final_data) + 1
+                            row_data.update(
+                                {
+                                    "_row_id": row_id,
+                                    "STT": row_idx,
+                                    "thu_tu_tuyen": "",
+                                    "cum_tuyen": "",
+                                    "khoang_cach_uoc_tinh": "",
+                                    "thoi_gian_uoc_tinh": "",
+                                    "ghi_chu_tuyen": "",
+                                }
+                            )
+                            final_data.append(row_data)
+                            new_rows_this_round += 1
+                            session_has_results = True
+
+                        root.after(0, lambda row=row_data: insert_result_row(row))
+                        root.after(
+                            0,
+                            lambda current=row_idx, total=target_limit: set_runtime_status(
+                                f"Tien do hien tai: {current}/{total} doanh nghiep.",
+                                "info",
+                                "DANG QUET",
+                            ),
+                        )
+
+                    if new_rows_this_round:
+                        stall_rounds = 0
+                    else:
+                        stall_rounds += 1
+                        if stall_rounds >= stall_limit:
+                            root.after(
+                                0,
+                                lambda: set_runtime_status(
+                                    "Khong con ket qua moi sau nhieu lan quet, tu dung de tranh quay vo han.",
+                                    "warning",
+                                    "DUNG QUET",
+                                ),
+                            )
+                            break
+
+                    try:
+                        feed.evaluate("el => el.scrollTop += 5000")
+                    except Exception:
+                        page.mouse.wheel(0, 5000)
+                    time.sleep(3)
+
+                    page_content = page.content()
+                    if "Báº¡n Ä‘Ã£ Ä‘i Ä‘áº¿n cuá»‘i danh sÃ¡ch" in page_content or "KhÃ´ng tÃ¬m tháº¥y káº¿t quáº£ nÃ o khÃ¡c" in page_content:
                         break
 
                 if not session_has_results:
@@ -3076,7 +4278,7 @@ def scraper_worker(thread_id, keyword, fallback_keyword, proxy_pool, profile_man
                 return True
         except Exception as exc:
             last_error = str(exc)
-            notify_browser_worker_error(thread_id, "khởi tạo/truy cập Maps", proxy_entry, exc)
+            notify_browser_worker_error(thread_id, "khá»Ÿi táº¡o/truy cáº­p Maps", proxy_entry, exc)
             if proxy_pool and proxy_entry:
                 cooldown = proxy_pool.report_failure(proxy_entry)
                 root.after(
@@ -3091,45 +4293,47 @@ def scraper_worker(thread_id, keyword, fallback_keyword, proxy_pool, profile_man
                 time.sleep(5)
             return False
         finally:
+            if detail_page:
+                try:
+                    detail_page.close()
+                except Exception:
+                    pass
             if browser_context:
                 try:
                     browser_context.close()
                 except Exception:
                     pass
 
-    if is_running:
+    if is_running and proxy_pool and proxy_pool.has_proxies:
+        while is_running and attempt < attempts_limit and not worker_success:
+            proxy_entry = proxy_pool.acquire() if proxy_pool and proxy_pool.has_proxies else None
+            if proxy_pool and proxy_pool.has_proxies and not proxy_entry:
+                time.sleep(1)
+                attempt += 1
+                continue
+
+            worker_success = run_session(proxy_entry)
+            if not worker_success:
+                attempt += 1
+                time.sleep(1.2)
+
+        if not worker_success and is_running:
+            root.after(
+                0,
+                lambda: set_runtime_status(
+                    "Tat ca proxy deu that bai, thu lai theo che do direct de khoanh vung loi.",
+                    "warning",
+                    "DIRECT FALLBACK",
+                ),
+            )
+            worker_success = run_session(None)
+    elif is_running:
         root.after(
             0,
             lambda: set_runtime_status(
-                "Dang thu ket noi truc tiep truoc khi dung proxy.",
+                "Dang chay truc tiep khong proxy.",
                 "info",
                 "DIRECT",
-            ),
-        )
-        worker_success = run_session(None)
-        if not worker_success:
-            attempt += 1
-            time.sleep(1.0)
-
-    while is_running and proxy_pool and proxy_pool.has_proxies and attempt < attempts_limit and not worker_success:
-        proxy_entry = proxy_pool.acquire() if proxy_pool and proxy_pool.has_proxies else None
-        if proxy_pool and proxy_pool.has_proxies and not proxy_entry:
-            time.sleep(1)
-            attempt += 1
-            continue
-
-        worker_success = run_session(proxy_entry)
-        if not worker_success:
-            attempt += 1
-            time.sleep(1.2)
-
-    if not worker_success and proxy_pool and proxy_pool.has_proxies and is_running:
-        root.after(
-            0,
-            lambda: set_runtime_status(
-                "Tat ca proxy deu that bai, thu lai theo che do direct de khoanh vung loi.",
-                "warning",
-                "DIRECT FALLBACK",
             ),
         )
         worker_success = run_session(None)
@@ -3162,6 +4366,7 @@ def start_app():
     lat_text = get_entry_clean_value(ent_lat)
     lng_text = get_entry_clean_value(ent_lng)
     zoom_text = ent_zoom.get().strip()
+    radius_text = get_entry_clean_value(ent_radius) if "ent_radius" in globals() else ""
 
     try:
         limit = int(ent_lim.get())
@@ -3178,13 +4383,13 @@ def start_app():
 
     has_location = bool(loc)
     has_manual_coordinates = bool(lat_text) or bool(lng_text)
-    manual_lat = normalize_coordinate_number(lat_text) if has_manual_coordinates else None
-    manual_lng = normalize_coordinate_number(lng_text) if has_manual_coordinates else None
+    manual_lat = normalize_coordinate_number(lat_text) if lat_text else None
+    manual_lng = normalize_coordinate_number(lng_text) if lng_text else None
 
-    if has_location:
-        lat_text = ""
-        lng_text = ""
-    elif has_manual_coordinates:
+    if has_manual_coordinates:
+        if not lat_text or not lng_text:
+            messagebox.showwarning("Thiếu thông tin", "Nếu dùng tọa độ thì phải nhập đủ cả vĩ độ và kinh độ.")
+            return
         if manual_lat is None or manual_lng is None:
             messagebox.showwarning("Thiếu thông tin", "Nếu dùng tọa độ thì phải nhập đủ cả vĩ độ và kinh độ.")
             return
@@ -3194,25 +4399,30 @@ def start_app():
             return
         lat_text = format_coordinate_value(manual_lat)
         lng_text = format_coordinate_value(manual_lng)
+    elif has_location:
+        lat_text = ""
+        lng_text = ""
     else:
-        messagebox.showwarning("Thiếu thông tin", "Nhập khu vực hoặc cấp lat/lng thủ công.")
-        return
+        lat_text = ""
+        lng_text = ""
 
     if min(limit, num_threads, win_w, win_h) <= 0:
         messagebox.showwarning("Không hợp lệ", "Các thông số phải lớn hơn 0.")
         return
 
-    anchor, anchor_warning = resolve_location_anchor(loc, lat_text, lng_text, zoom_text)
+    set_runtime_status("Đang chuẩn bị mở Chrome và nạp luồng quét...", "info", "KHỞI ĐỘNG")
+    anchor, anchor_warning = resolve_location_anchor(loc, lat_text, lng_text, zoom_text, radius_text)
     if anchor:
+        radius_label = f"{anchor.radius_km:g} km"
         if anchor.source == "manual":
             set_runtime_status(
-                f"Manual anchor: {anchor.lat:.6f}, {anchor.lng:.6f} (zoom {anchor.zoom})",
+                f"Manual anchor: {anchor.lat:.6f}, {anchor.lng:.6f} (zoom {anchor.zoom}, radius {radius_label})",
                 "info",
                 "ANCHOR",
             )
         else:
             set_runtime_status(
-                f"Anchor: {loc} -> {anchor.lat:.6f}, {anchor.lng:.6f} (zoom {anchor.zoom})",
+                f"Anchor: {loc} -> {anchor.lat:.6f}, {anchor.lng:.6f} (zoom {anchor.zoom}, radius {radius_label})",
                 "info",
                 "ANCHOR",
             )
@@ -3223,6 +4433,12 @@ def start_app():
                 "info",
                 "ANCHOR FALLBACK",
             )
+        elif not has_manual_coordinates:
+            set_runtime_status(
+                f"Quét theo từ khóa '{kw}' không dùng mốc tọa độ.",
+                "info",
+                "KEYWORD",
+            )
         else:
             set_runtime_status(
                 f"Anchor fallback về cách cũ: {anchor_warning}",
@@ -3230,8 +4446,10 @@ def start_app():
                 "ANCHOR FALLBACK",
             )
 
-    search_keyword = kw if anchor else f"{kw} tại {loc}".strip()
-    fallback_keyword = f"{kw} tại {loc}".strip() if loc else kw
+    # Ưu tiên bám sát khu vực người dùng nhập ngay từ query đầu.
+    # Nếu vẫn chưa đủ kết quả thì mới nới dần về từ khóa gốc.
+    search_keyword = f"{kw} tại {loc}".strip() if loc else kw
+    fallback_keyword = kw if loc else kw
 
     proxies = get_proxy_list()
     proxy_pool = ProxyPool(proxies)
@@ -3256,6 +4474,79 @@ def start_app():
         "ĐANG CHẠY",
     )
     update_runtime_badges()
+
+    def launch_scan_session():
+        anchor, anchor_warning = resolve_location_anchor(loc, lat_text, lng_text, zoom_text, radius_text)
+
+        def launch_workers():
+            if not is_running:
+                return
+
+            if anchor:
+                radius_label = f"{anchor.radius_km:g} km"
+                if anchor.source == "manual":
+                    set_runtime_status(
+                        f"Manual anchor: {anchor.lat:.6f}, {anchor.lng:.6f} (zoom {anchor.zoom}, radius {radius_label})",
+                        "info",
+                        "ANCHOR",
+                    )
+                else:
+                    set_runtime_status(
+                        f"Anchor: {loc} -> {anchor.lat:.6f}, {anchor.lng:.6f} (zoom {anchor.zoom}, radius {radius_label})",
+                        "info",
+                        "ANCHOR",
+                    )
+            else:
+                if has_location:
+                    set_runtime_status(
+                        f"Không định vị được khu vực '{loc}', app sẽ chạy theo từ khóa.",
+                        "info",
+                        "ANCHOR FALLBACK",
+                    )
+                elif not has_manual_coordinates:
+                    set_runtime_status(
+                        f"Quét theo từ khóa '{kw}' không dùng mốc tọa độ.",
+                        "info",
+                        "KEYWORD",
+                    )
+                else:
+                    set_runtime_status(
+                        f"Anchor fallback về cách cũ: {anchor_warning}",
+                        "warning",
+                        "ANCHOR FALLBACK",
+                    )
+
+            screen_w = root.winfo_screenwidth()
+            max_cols = screen_w // win_w if screen_w > win_w else 1
+
+            for idx in range(num_threads):
+                pos_x = (idx % max_cols) * win_w
+                pos_y = (idx // max_cols) * (win_h + 40)
+
+                threading.Thread(
+                    target=scraper_worker,
+                    args=(
+                        idx + 1,
+                        search_keyword,
+                        fallback_keyword,
+                        proxy_pool,
+                        profile_manager,
+                        anchor,
+                        limit,
+                        is_headless,
+                        win_w,
+                        win_h,
+                        pos_x,
+                        pos_y,
+                    ),
+                    daemon=True,
+                ).start()
+                time.sleep(1.0)
+
+        root.after(0, launch_workers)
+
+    threading.Thread(target=launch_scan_session, daemon=True).start()
+    return
 
     screen_w = root.winfo_screenwidth()
     max_cols = screen_w // win_w if screen_w > win_w else 1
@@ -4666,10 +5957,11 @@ if not login_success:
 
 
 root = tk.Tk()
-root.title(f"THL Maps Pro v{APP_RELEASE_VERSION} - Dashboard")
+root.title(f"KB Maps Pro v{APP_RELEASE_VERSION} - Dashboard")
 root.configure(bg=APP_THEME["bg"])
 root.minsize(1120, 760)
 center_window(root, 1240, 860)
+root.resizable(True, True)
 set_app_icon(root)
 setup_ttk_styles()
 
@@ -4692,8 +5984,8 @@ header_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
 tk.Label(
     header_text,
-    text=f"THL Maps Pro v{APP_RELEASE_VERSION}",
-    font=(FONT_FAMILY, 24, "bold"),
+    text=f"KB Maps Pro v{APP_RELEASE_VERSION}",
+    font=(FONT_FAMILY, 21, "bold"),
     bg=APP_THEME["bg"],
     fg=APP_THEME["text"],
 ).pack(anchor="w")
@@ -4719,44 +6011,63 @@ lbl_state_badge = tk.Label(
 )
 lbl_state_badge.pack(side=tk.RIGHT)
 
+top_actions = tk.Frame(app_shell, bg=APP_THEME["bg"])
+top_actions.pack(fill=tk.X, pady=(0, 14))
+
+make_button(top_actions, "BẮT ĐẦU QUÉT", lambda: start_app(), APP_THEME["accent"], APP_THEME["accent_hover"], width=16).pack(side=tk.LEFT, padx=(0, 10))
+make_button(top_actions, "DỪNG NGAY", lambda: stop_app(), APP_THEME["danger"], APP_THEME["danger_hover"], width=12).pack(side=tk.LEFT, padx=(0, 10))
+make_button(top_actions, "XUẤT EXCEL", export_to_excel, APP_THEME["info"], "#0284C7", width=12).pack(side=tk.LEFT, padx=(0, 10))
+make_button(top_actions, "MỞ TUYẾN MAPS", open_route_on_google_maps, APP_THEME["accent"], APP_THEME["accent_hover"], width=14).pack(side=tk.LEFT)
+
 content = tk.Frame(app_shell, bg=APP_THEME["bg"])
 content.pack(fill=tk.BOTH, expand=True)
-content.grid_columnconfigure(0, weight=5, minsize=820)
-content.grid_columnconfigure(1, weight=4, minsize=520)
+content.grid_columnconfigure(0, weight=1)
 content.grid_rowconfigure(0, weight=1)
 
 left_col = tk.Frame(content, bg=APP_THEME["bg"])
-left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
-left_col.grid_columnconfigure(0, weight=1)
-left_col.grid_rowconfigure(1, weight=1)
-left_col.grid_rowconfigure(2, weight=0)
+left_col_wrap = tk.Frame(content, bg=APP_THEME["bg"])
+left_col_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+left_col_wrap.grid_rowconfigure(0, weight=1)
+left_col_wrap.grid_columnconfigure(0, weight=1)
 
-right_col_wrap = tk.Frame(content, bg=APP_THEME["bg"])
-right_col_wrap.grid(row=0, column=1, sticky="nsew")
-right_col_wrap.grid_rowconfigure(0, weight=1)
-right_col_wrap.grid_columnconfigure(0, weight=1)
-
-right_col_canvas = tk.Canvas(
-    right_col_wrap,
+left_col_canvas = tk.Canvas(
+    left_col_wrap,
     bg=APP_THEME["bg"],
     highlightthickness=0,
     bd=0,
 )
-right_col_canvas.grid(row=0, column=0, sticky="nsew")
+left_col_canvas.grid(row=0, column=0, sticky="nsew")
 
-right_col_scroll = ttk.Scrollbar(
-    right_col_wrap,
+left_col_scroll = ttk.Scrollbar(
+    left_col_wrap,
     orient="vertical",
-    command=right_col_canvas.yview,
+    command=left_col_canvas.yview,
     style="Vertical.TScrollbar",
 )
-right_col_scroll.grid(row=0, column=1, sticky="ns")
-right_col_canvas.configure(yscrollcommand=right_col_scroll.set)
+left_col_scroll.grid(row=0, column=1, sticky="ns")
+left_col_canvas.configure(yscrollcommand=left_col_scroll.set)
 
-right_col = tk.Frame(right_col_canvas, bg=APP_THEME["bg"])
-right_col_window = right_col_canvas.create_window((0, 0), window=right_col, anchor="nw")
-right_col.grid_columnconfigure(0, weight=1)
-right_col.grid_rowconfigure(4, weight=1)
+left_col = tk.Frame(left_col_canvas, bg=APP_THEME["bg"])
+left_col_window = left_col_canvas.create_window((0, 0), window=left_col, anchor="nw")
+left_col.grid_columnconfigure(0, weight=1)
+
+
+def _sync_left_panel_scroll_region(_event=None):
+    left_col_canvas.configure(scrollregion=left_col_canvas.bbox("all"))
+
+
+def _sync_left_panel_width(event):
+    left_col_canvas.itemconfigure(left_col_window, width=event.width)
+
+
+left_col.bind("<Configure>", _sync_left_panel_scroll_region)
+left_col_canvas.bind("<Configure>", _sync_left_panel_width)
+
+right_col_wrap = left_col_wrap
+right_col_canvas = left_col_canvas
+right_col_scroll = left_col_scroll
+right_col = left_col
+right_col_window = left_col_window
 
 
 def _sync_right_panel_scroll_region(_event=None):
@@ -4769,6 +6080,7 @@ def _sync_right_panel_width(event):
 
 right_col.bind("<Configure>", _sync_right_panel_scroll_region)
 right_col_canvas.bind("<Configure>", _sync_right_panel_width)
+left_col_scroll.grid_remove()
 
 
 def _right_panel_mousewheel_units(event):
@@ -4800,19 +6112,40 @@ def _bind_right_panel_mousewheel(widget):
     for child in widget.winfo_children():
         _bind_right_panel_mousewheel(child)
 
+top_strip = tk.Frame(left_col, bg=APP_THEME["bg"])
+top_strip.grid(row=0, column=0, sticky="ew", pady=(4, 0))
+top_strip.grid_rowconfigure(0, weight=1)
+top_strip.grid_rowconfigure(1, weight=1)
+top_strip.grid_columnconfigure(0, weight=5, uniform="top_strip")
+top_strip.grid_columnconfigure(1, weight=3, uniform="top_strip")
+
+preview_strip = tk.Frame(left_col, bg=APP_THEME["bg"])
+preview_strip.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+for col in range(3):
+    preview_strip.grid_columnconfigure(col, weight=1, uniform="preview_strip")
+
+results_card, results_body = make_card(
+    top_strip,
+    "Kết quả thu thập",
+    "Danh sách doanh nghiệp sẽ đổ trực tiếp vào bảng bên dưới.",
+    accent=APP_THEME["info"],
+)
+results_card.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 10), pady=(0, 8))
+results_body.grid_rowconfigure(0, weight=1)
+results_body.grid_columnconfigure(0, weight=1)
+
 search_card, search_body = make_card(
-    left_col,
+    top_strip,
     "Bộ lọc tìm kiếm",
     "Xác định khu vực, từ khóa và số lượng doanh nghiệp cần quét.",
     accent=APP_THEME["accent"],
 )
-search_card.grid(row=0, column=0, sticky="ew", pady=(0, 14))
-search_body.grid_columnconfigure(0, weight=4)
-search_body.grid_columnconfigure(1, weight=4)
-search_body.grid_columnconfigure(2, weight=2)
+search_card.grid(row=0, column=1, sticky="nsew", pady=(0, 8))
+search_body.grid_columnconfigure(0, weight=1)
+search_body.grid_columnconfigure(1, weight=1)
 
 field_loc = tk.Frame(search_body, bg=APP_THEME["surface"])
-field_loc.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+field_loc.grid(row=0, column=0, sticky="ew", padx=(0, 8), pady=(0, 10))
 tk.Label(
     field_loc,
     text="Khu vực",
@@ -4823,10 +6156,10 @@ tk.Label(
 ent_loc = tk.Entry(field_loc)
 style_entry(ent_loc)
 ent_loc.insert(0, "Mỹ Tho")
-ent_loc.pack(fill=tk.X, ipady=10, pady=(8, 0))
+ent_loc.pack(fill=tk.X, ipady=8, pady=(6, 0))
 
 field_kw = tk.Frame(search_body, bg=APP_THEME["surface"])
-field_kw.grid(row=0, column=1, sticky="ew", padx=5)
+field_kw.grid(row=0, column=1, sticky="ew", padx=(8, 0), pady=(0, 10))
 tk.Label(
     field_kw,
     text="Từ khóa",
@@ -4837,10 +6170,10 @@ tk.Label(
 ent_kw = tk.Entry(field_kw)
 style_entry(ent_kw)
 ent_kw.insert(0, "Salon tóc")
-ent_kw.pack(fill=tk.X, ipady=10, pady=(8, 0))
+ent_kw.pack(fill=tk.X, ipady=8, pady=(6, 0))
 
 field_limit = tk.Frame(search_body, bg=APP_THEME["surface"])
-field_limit.grid(row=0, column=2, sticky="ew", padx=(10, 0))
+field_limit.grid(row=1, column=0, sticky="ew", padx=(0, 8), pady=(0, 10))
 tk.Label(
     field_limit,
     text="Mục tiêu",
@@ -4851,10 +6184,24 @@ tk.Label(
 ent_lim = tk.Entry(field_limit)
 style_entry(ent_lim, justify="center")
 ent_lim.insert(0, "100")
-ent_lim.pack(fill=tk.X, ipady=10, pady=(8, 0))
+ent_lim.pack(fill=tk.X, ipady=8, pady=(6, 0))
+
+field_radius = tk.Frame(search_body, bg=APP_THEME["surface"])
+field_radius.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(0, 10))
+tk.Label(
+    field_radius,
+    text="Bán kính quét (km)",
+    font=(FONT_FAMILY, 9, "bold"),
+    bg=APP_THEME["surface"],
+    fg=APP_THEME["text"],
+).pack(anchor="w")
+ent_radius = tk.Entry(field_radius)
+style_entry(ent_radius, justify="center")
+ent_radius.insert(0, "5")
+ent_radius.pack(fill=tk.X, ipady=8, pady=(6, 0))
 
 field_lat = tk.Frame(search_body, bg=APP_THEME["surface"])
-field_lat.grid(row=1, column=0, sticky="ew", padx=(0, 10), pady=(12, 0))
+field_lat.grid(row=2, column=0, sticky="ew", padx=(0, 8), pady=(0, 10))
 tk.Label(
     field_lat,
     text="Vĩ độ",
@@ -4864,10 +6211,10 @@ tk.Label(
 ).pack(anchor="w")
 ent_lat = tk.Entry(field_lat)
 style_entry(ent_lat, justify="left")
-ent_lat.pack(fill=tk.X, ipady=10, pady=(8, 0))
+ent_lat.pack(fill=tk.X, ipady=8, pady=(6, 0))
 
 field_lng = tk.Frame(search_body, bg=APP_THEME["surface"])
-field_lng.grid(row=1, column=1, sticky="ew", padx=5, pady=(12, 0))
+field_lng.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(0, 10))
 tk.Label(
     field_lng,
     text="Kinh độ",
@@ -4877,10 +6224,10 @@ tk.Label(
 ).pack(anchor="w")
 ent_lng = tk.Entry(field_lng)
 style_entry(ent_lng, justify="left")
-ent_lng.pack(fill=tk.X, ipady=10, pady=(8, 0))
+ent_lng.pack(fill=tk.X, ipady=8, pady=(6, 0))
 
 field_zoom = tk.Frame(search_body, bg=APP_THEME["surface"])
-field_zoom.grid(row=1, column=2, sticky="ew", padx=(10, 0), pady=(12, 0))
+field_zoom.grid(row=3, column=0, sticky="ew", padx=(0, 8), pady=(0, 10))
 tk.Label(
     field_zoom,
     text="Zoom",
@@ -4891,7 +6238,7 @@ tk.Label(
 ent_zoom = tk.Entry(field_zoom)
 style_entry(ent_zoom, justify="left")
 ent_zoom.insert(0, "14")
-ent_zoom.pack(fill=tk.X, ipady=10, pady=(8, 0))
+ent_zoom.pack(fill=tk.X, ipady=8, pady=(6, 0))
 
 btn_paste_coord = make_button(
     field_zoom,
@@ -4901,7 +6248,16 @@ btn_paste_coord = make_button(
     "#334155",
     width=12,
 )
-btn_paste_coord.pack(fill=tk.X, pady=(8, 0))
+btn_paste_coord.pack(fill=tk.X, pady=(6, 0))
+
+make_button(
+    search_body,
+    "TỌA ĐỘ / NÂNG CAO",
+    open_search_settings_popup,
+    APP_THEME["panel_alt"],
+    "#334155",
+    width=16,
+).grid(row=3, column=1, sticky="ew", pady=(0, 10), padx=(8, 0))
 
 search_hint = tk.Frame(
     search_body,
@@ -4910,7 +6266,7 @@ search_hint = tk.Frame(
     highlightthickness=1,
     bd=0,
 )
-search_hint.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(14, 0))
+search_hint.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(4, 0))
 tk.Label(
     search_hint,
     text="Gợi ý: chỉ cần nhập khu vực hoặc tọa độ, không cần cả hai. Từ khóa càng ngắn gọn và đúng ngữ cảnh địa phương thì kết quả trên Google Maps thường ổn định hơn.",
@@ -4918,21 +6274,106 @@ tk.Label(
     bg=APP_THEME["panel"],
     fg=APP_THEME["muted"],
     justify="left",
-    wraplength=760,
-).pack(anchor="w", padx=14, pady=12)
+    wraplength=380,
+).pack(anchor="w", padx=12, pady=10)
 
-results_card, results_body = make_card(
-    left_col,
-    "Kết quả thu thập",
-    "Danh sách doanh nghiệp sẽ đổ trực tiếp vào bảng bên dưới.",
-    accent=APP_THEME["info"],
+scan_context = tk.Frame(
+    search_body,
+    bg=APP_THEME["panel"],
+    highlightbackground=APP_THEME["border"],
+    highlightthickness=1,
+    bd=0,
 )
-results_card.grid(row=1, column=0, sticky="nsew")
-results_body.grid_rowconfigure(0, weight=1)
-results_body.grid_columnconfigure(0, weight=1)
+scan_context.grid(row=8, column=0, sticky="ew", pady=(12, 0))
+scan_context.grid_columnconfigure(1, weight=1)
+
+tk.Label(
+    scan_context,
+    text="Khu vực quét:",
+    font=(FONT_FAMILY, 9, "bold"),
+    bg=APP_THEME["panel"],
+    fg=APP_THEME["muted"],
+).grid(row=0, column=0, sticky="w", padx=14, pady=(10, 4))
+lbl_scan_area_value = tk.Label(
+    scan_context,
+    text="--",
+    font=(FONT_FAMILY, 9),
+    bg=APP_THEME["panel"],
+    fg=APP_THEME["text"],
+    justify="left",
+    wraplength=360,
+)
+lbl_scan_area_value.grid(row=0, column=1, sticky="w", padx=8, pady=(10, 4))
+
+tk.Label(
+    scan_context,
+    text="Mốc tọa độ:",
+    font=(FONT_FAMILY, 9, "bold"),
+    bg=APP_THEME["panel"],
+    fg=APP_THEME["muted"],
+).grid(row=1, column=0, sticky="w", padx=14, pady=4)
+lbl_scan_anchor_value = tk.Label(
+    scan_context,
+    text="--",
+    font=(FONT_FAMILY, 9),
+    bg=APP_THEME["panel"],
+    fg=APP_THEME["text"],
+    justify="left",
+    wraplength=360,
+)
+lbl_scan_anchor_value.grid(row=1, column=1, sticky="w", padx=8, pady=4)
+
+tk.Label(
+    scan_context,
+    text="Query:",
+    font=(FONT_FAMILY, 9, "bold"),
+    bg=APP_THEME["panel"],
+    fg=APP_THEME["muted"],
+).grid(row=2, column=0, sticky="w", padx=14, pady=(4, 10))
+lbl_scan_query_value = tk.Label(
+    scan_context,
+    text="--",
+    font=(FONT_FAMILY, 9),
+    bg=APP_THEME["panel"],
+    fg=APP_THEME["text"],
+    justify="left",
+    wraplength=360,
+)
+lbl_scan_query_value.grid(row=2, column=1, sticky="w", padx=8, pady=(4, 10))
+
+search_preview_summary = tk.Frame(
+    search_body,
+    bg=APP_THEME["panel"],
+    highlightbackground=APP_THEME["border"],
+    highlightthickness=1,
+    bd=0,
+)
+search_preview_summary.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+search_preview_summary.grid_columnconfigure(0, weight=1)
+search_preview_summary_label = tk.Label(
+    search_preview_summary,
+    text="--",
+    font=(FONT_FAMILY, 9),
+    bg=APP_THEME["panel"],
+    fg=APP_THEME["text"],
+    justify="left",
+    wraplength=360,
+)
+search_preview_summary_label.pack(anchor="w", padx=12, pady=8)
+
+for widget in (
+    field_radius,
+    field_zoom,
+    btn_paste_coord,
+    search_hint,
+    scan_context,
+):
+    widget.grid_remove()
 
 table_frame = tk.Frame(results_body, bg=APP_THEME["surface"])
 table_frame.grid(row=0, column=0, sticky="nsew")
+table_frame.grid_rowconfigure(0, weight=1)
+table_frame.grid_columnconfigure(0, weight=1)
 
 tree = ttk.Treeview(
     table_frame,
@@ -4966,15 +6407,15 @@ tree.column("route_time", width=150, anchor="center")
 tree.column("route_note", width=220, anchor="w")
 tree.tag_configure("oddrow", background=APP_THEME["panel"], foreground=APP_THEME["text"])
 tree.tag_configure("evenrow", background=APP_THEME["panel_alt"], foreground=APP_THEME["text"])
-tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+tree.grid(row=0, column=0, sticky="nsew")
 
 scrl = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview, style="Vertical.TScrollbar")
 tree.configure(yscrollcommand=scrl.set)
-scrl.pack(side=tk.RIGHT, fill=tk.Y)
+scrl.grid(row=0, column=1, sticky="ns")
 
 scrl_x = ttk.Scrollbar(table_frame, orient="horizontal", command=tree.xview, style="Horizontal.TScrollbar")
 tree.configure(xscrollcommand=scrl_x.set)
-scrl_x.pack(side=tk.BOTTOM, fill=tk.X, pady=(8, 0))
+scrl_x.grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
 results_footer = tk.Frame(results_body, bg=APP_THEME["surface"])
 results_footer.grid(row=1, column=0, sticky="ew", pady=(14, 0))
@@ -5034,12 +6475,12 @@ btn_open_maps_quick = make_button(
 btn_open_maps_quick.pack(side=tk.LEFT)
 
 route_card, route_body = make_card(
-    right_col,
+    top_strip,
     "Sắp xếp theo tuyến cho sales",
     "Tối ưu thứ tự đi để hạn chế nhảy điểm, đi vòng và thuận tuyến thực tế hơn.",
     accent=APP_THEME["warning"],
 )
-route_card.grid(row=2, column=0, sticky="ew", pady=(0, 14))
+route_card.grid(row=0, column=2, sticky="nsew", padx=(10, 0))
 route_body.grid_columnconfigure(0, weight=1)
 route_body.grid_columnconfigure(1, weight=1)
 route_body.grid_columnconfigure(2, weight=1)
@@ -5246,13 +6687,34 @@ lbl_route_total_distance_value = tk.Label(
 )
 lbl_route_total_distance_value.grid(row=3, column=1, sticky="w", padx=8, pady=(4, 10))
 
+route_card.grid_remove()
+route_preview_card, route_preview_body = make_card(
+    top_strip,
+    "Tối ưu tuyến",
+    "Thiết lập điểm bắt đầu, kiểu sắp xếp và phạm vi áp dụng.",
+    accent=APP_THEME["warning"],
+)
+route_preview_card.grid(row=1, column=1, sticky="nsew", pady=(0, 8))
+route_preview_body.grid_columnconfigure(0, weight=1)
+route_preview_summary = tk.Label(
+    route_preview_body,
+    text="--",
+    font=(FONT_FAMILY, 9),
+    bg=APP_THEME["surface"],
+    fg=APP_THEME["muted"],
+    justify="left",
+    wraplength=240,
+)
+route_preview_summary.pack(anchor="w", fill=tk.X, pady=(0, 10))
+make_button(route_preview_body, "MỞ CHI TIẾT", open_route_settings_popup, APP_THEME["warning"], "#D97706", width=14).pack(anchor="w")
+
 runtime_card, runtime_body = make_card(
     right_col,
     "Cấu hình vận hành",
     "Thiết lập số luồng, kích thước cửa sổ và chế độ chạy.",
     accent=APP_THEME["warning"],
 )
-runtime_card.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+runtime_card.grid(row=1, column=0, sticky="ew", pady=(14, 14))
 for col in range(2):
     runtime_body.grid_columnconfigure(col, weight=1)
 
@@ -5355,6 +6817,27 @@ lbl_window_note = tk.Label(
     fg=APP_THEME["muted"],
 )
 lbl_window_note.grid(row=3, column=0, columnspan=2, sticky="w", pady=(12, 0))
+runtime_card.grid_remove()
+
+runtime_preview_card, runtime_preview_body = make_card(
+    preview_strip,
+    "Cấu hình vận hành",
+    "Thu gọn luồng, kích thước cửa sổ và chế độ chạy thành 1 card nhỏ.",
+    accent=APP_THEME["warning"],
+)
+runtime_preview_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+runtime_preview_body.grid_columnconfigure(0, weight=1)
+runtime_preview_summary = tk.Label(
+    runtime_preview_body,
+    text="--",
+    font=(FONT_FAMILY, 9),
+    bg=APP_THEME["surface"],
+    fg=APP_THEME["muted"],
+    justify="left",
+    wraplength=240,
+)
+runtime_preview_summary.pack(anchor="w", fill=tk.X, pady=(0, 10))
+make_button(runtime_preview_body, "MỞ CHI TIẾT", open_runtime_settings_popup, APP_THEME["warning"], "#D97706", width=14).pack(anchor="w")
 
 proxy_card, proxy_body = make_card(
     right_col,
@@ -5362,7 +6845,7 @@ proxy_card, proxy_body = make_card(
     "Mỗi dòng một proxy. Để trống nếu bạn muốn chạy bằng mạng hiện tại.",
     accent=APP_THEME["violet"],
 )
-proxy_card.grid(row=1, column=0, sticky="nsew", pady=(0, 14))
+proxy_card.grid(row=2, column=0, sticky="nsew", pady=(0, 14))
 proxy_body.grid_rowconfigure(1, weight=1)
 proxy_body.grid_columnconfigure(0, weight=1)
 
@@ -5464,89 +6947,70 @@ lbl_proxy_check_result = tk.Label(
     bg=APP_THEME["surface"],
     fg=APP_THEME["muted"],
     justify="left",
-    wraplength=360,
+    wraplength=240,
 )
 lbl_proxy_check_result.grid(row=3, column=0, sticky="w", pady=(10, 0))
+proxy_card.grid_remove()
 
-action_card, action_body = make_card(
-    right_col,
-    "Điều khiển",
-    "Bắt đầu, dừng và theo dõi trạng thái phiên quét hiện tại.",
-    accent=APP_THEME["accent"],
+proxy_preview_card, proxy_preview_body = make_card(
+    preview_strip,
+    "Danh sách proxy",
+    "Chỉ xem nhanh số proxy đã nạp và mở popup để chỉnh.",
+    accent=APP_THEME["violet"],
 )
-action_card.grid(row=3, column=0, sticky="ew")
-
-action_buttons = tk.Frame(action_body, bg=APP_THEME["surface"])
-action_buttons.pack(fill=tk.X)
-action_buttons.grid_columnconfigure(0, weight=1)
-action_buttons.grid_columnconfigure(1, weight=1)
-
-btn_run = make_button(
-    action_buttons,
-    "BẮT ĐẦU QUÉT",
-    start_app,
-    APP_THEME["accent"],
-    APP_THEME["accent_hover"],
-    width=15,
-)
-btn_run.configure(pady=10)
-btn_run.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-
-btn_stop = make_button(
-    action_buttons,
-    "DỪNG NGAY",
-    stop_app,
-    APP_THEME["danger"],
-    APP_THEME["danger_hover"],
-    width=15,
-)
-btn_stop.configure(pady=10)
-btn_stop.grid(row=0, column=1, sticky="ew", padx=(8, 0))
-btn_stop.config(state=tk.DISABLED)
-
-status_panel = tk.Frame(
-    action_body,
-    bg=APP_THEME["panel"],
-    highlightbackground=APP_THEME["border"],
-    highlightthickness=1,
-    bd=0,
-)
-status_panel.pack(fill=tk.X, pady=(14, 10))
-
-tk.Label(
-    status_panel,
-    text="Trạng thái hiện tại",
-    font=(FONT_FAMILY, 9, "bold"),
-    bg=APP_THEME["panel"],
-    fg=APP_THEME["muted"],
-).pack(anchor="w", padx=14, pady=(12, 4))
-
-lbl_stt = tk.Label(
-    status_panel,
-    text="Sẵn sàng để quét dữ liệu mới.",
-    font=(FONT_FAMILY, 10),
-    bg=APP_THEME["panel"],
-    fg=APP_THEME["muted"],
-    justify="left",
-    wraplength=320,
-)
-lbl_stt.pack(anchor="w", padx=14, pady=(0, 12))
-
-tk.Label(
-    action_body,
-    text="Dữ liệu sẽ được cập nhật trực tiếp vào bảng bên trái và có thể xuất ra Excel ngay sau khi hoàn tất.",
+proxy_preview_card.grid(row=0, column=1, sticky="nsew", padx=5)
+proxy_preview_body.grid_columnconfigure(0, weight=1)
+proxy_preview_summary = tk.Label(
+    proxy_preview_body,
+    text="--",
     font=(FONT_FAMILY, 9),
     bg=APP_THEME["surface"],
     fg=APP_THEME["muted"],
     justify="left",
-    wraplength=340,
-).pack(anchor="w")
+    wraplength=240,
+)
+proxy_preview_summary.pack(anchor="w", fill=tk.X, pady=(0, 10))
+make_button(proxy_preview_body, "MỞ CHI TIẾT", open_proxy_settings_popup, APP_THEME["violet"], "#7C3AED", width=14).pack(anchor="w")
 
-for widget in (ent_threads, ent_lim, ent_win_w, ent_win_h, ent_lat, ent_lng, ent_zoom, ent_route_start):
+action_card, action_body = make_card(
+    preview_strip,
+    "Điều khiển",
+    "Theo dõi trạng thái quét và log lỗi.",
+    accent=APP_THEME["accent"],
+)
+action_card.grid(row=0, column=2, sticky="nsew", padx=(10, 0))
+action_body.grid_columnconfigure(0, weight=1)
+
+lbl_stt = tk.Label(
+    action_body,
+    text="Sẵn sàng để quét dữ liệu mới.",
+    font=(FONT_FAMILY, 9),
+    bg=APP_THEME["surface"],
+    fg=APP_THEME["muted"],
+    justify="left",
+    wraplength=240,
+)
+lbl_stt.pack(anchor="w")
+
+control_preview_summary_label = tk.Label(
+    action_body,
+    text="--",
+    font=(FONT_FAMILY, 9),
+    bg=APP_THEME["surface"],
+    fg=APP_THEME["text"],
+    justify="left",
+    wraplength=240,
+)
+control_preview_summary_label.pack(anchor="w", pady=(6, 8))
+
+make_button(action_body, "MỞ CHI TIẾT", open_control_popup, APP_THEME["accent"], APP_THEME["accent_hover"], width=14).pack(anchor="w")
+
+for widget in (ent_loc, ent_kw, ent_threads, ent_lim, ent_win_w, ent_win_h, ent_lat, ent_lng, ent_zoom, ent_radius, ent_route_start):
     widget.bind("<KeyRelease>", update_runtime_badges)
 
 attach_entry_placeholder(ent_lat, "10.8231")
 attach_entry_placeholder(ent_lng, "106.6297")
+attach_entry_placeholder(ent_radius, "5")
 for coordinate_entry in (ent_lat, ent_lng):
     coordinate_entry.bind("<Control-v>", handle_coordinate_paste, add="+")
     coordinate_entry.bind("<<Paste>>", handle_coordinate_paste, add="+")
