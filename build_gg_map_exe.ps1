@@ -43,12 +43,6 @@ $sources = @(
 
 $cleanTargets = @(
     (Join-Path $projectRoot ".build_tcl"),
-    (Join-Path $projectRoot ".build_gate1"),
-    (Join-Path $projectRoot ".build_gate2"),
-    (Join-Path $projectRoot ".build_gate3"),
-    (Join-Path $projectRoot ".build_gate5"),
-    (Join-Path $projectRoot ".build_gate7"),
-    $patchedDir,
     (Join-Path $projectRoot "build"),
     (Join-Path $projectRoot "dist")
 )
@@ -56,6 +50,9 @@ foreach ($target in $cleanTargets) {
     if (Test-Path $target) {
         Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
     }
+}
+Get-ChildItem -Path $projectRoot -Directory -Filter ".build_gate*" -Force -ErrorAction SilentlyContinue | ForEach-Object {
+    Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
 }
 New-Item -ItemType Directory -Force -Path $patchedDir | Out-Null
 
