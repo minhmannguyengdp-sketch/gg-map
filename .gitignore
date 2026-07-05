@@ -9,10 +9,5 @@ gpt_review_bundle/
 *.dll
 ms-playwright/
 .build_tcl/
-.build_gate1/
-.build_gate2/
-.build_gate3/
-.build_gate5/
-.build_gate7/
-.build_gate_final/
+.build_gate*/
 .build_ms-playwright/
