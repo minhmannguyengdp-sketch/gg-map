@@ -44,7 +44,7 @@ def main(argv: list[str]) -> int:
     source_text = source_path.read_text(encoding="utf-8")
     patched_text = apply_gate2_patch(source_text)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(patched_text, encoding="utf-8", newline="\n")
+    output_path.write_text(patched_text, encoding="utf-8")
     print(f"Gate 2 single-worker source generated: {output_path}")
     return 0
 
