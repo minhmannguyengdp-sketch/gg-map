@@ -6,6 +6,7 @@ from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_submodules
 
 BASE_DIR = Path(os.getcwd()).resolve()
+ENTRY_SCRIPT = Path(os.environ.get("GG_MAP_ENTRY_SCRIPT", str(BASE_DIR / "ui_cao_map.py"))).resolve()
 
 datas = []
 hiddenimports = []
@@ -26,8 +27,8 @@ hiddenimports += collect_submodules("openpyxl")
 
 
 a = Analysis(
-    [str(BASE_DIR / "ui_cao_map.py")],
-    pathex=[str(BASE_DIR)],
+    [str(ENTRY_SCRIPT)],
+    pathex=[str(BASE_DIR), str(ENTRY_SCRIPT.parent)],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
