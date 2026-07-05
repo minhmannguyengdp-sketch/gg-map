@@ -26,7 +26,8 @@ $gatePatchScripts = @(
     "tools\apply_gate4_coordinate_priority.py",
     "tools\apply_gate5_proxy_layer.py",
     "tools\apply_gate6_maps_buttons.py",
-    "tools\apply_gate7_mst_audit.py"
+    "tools\apply_gate7_mst_audit.py",
+    "tools\apply_gate9_compact_ui_fast_maps.py"
 ) | ForEach-Object { Join-Path $projectRoot $_ }
 
 $patchedDir = Join-Path $projectRoot ".build_gate_final"
@@ -38,6 +39,7 @@ $sources = @(
     (Join-Path $patchedDir "ui_cao_map_gate4.py"),
     (Join-Path $patchedDir "ui_cao_map_gate5.py"),
     (Join-Path $patchedDir "ui_cao_map_gate6.py"),
+    (Join-Path $patchedDir "ui_cao_map_gate7.py"),
     (Join-Path $patchedDir "ui_cao_map.py")
 )
 
