@@ -29,8 +29,9 @@ TAX_HANDLER_MARKERS = [
     "export_tax_results_to_excel",
 ]
 
-TAX_CODE_START_MARKER = "def execute_tax_lookup("
-TAX_UI_END_MARKER = "def handle_main_close("
+# MST code sits after handle_main_close and before the Tk root/bootstrap block.
+TAX_CODE_START_MARKER = "@dataclass\nclass TaxLookupInput:"
+TAX_UI_END_MARKER = "root = tk.Tk()"
 
 
 def apply_gate7_audit(source_text: str) -> str:
@@ -47,7 +48,7 @@ def apply_gate7_audit(source_text: str) -> str:
 
     tax_start = source_text.find(TAX_CODE_START_MARKER)
     tax_end = source_text.find(TAX_UI_END_MARKER, tax_start)
-    if tax_start == -1 or tax_end == -1:
+    if tax_start == -1 or tax_end == -1 or tax_end <= tax_start:
         raise RuntimeError("Gate 7 fail: không khoanh được vùng code MST để audit độc lập Chrome.")
 
     tax_block = source_text[tax_start:tax_end]
